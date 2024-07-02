@@ -118,11 +118,8 @@ class TrackerSiamFC(Tracker):
         self.hann_window = np.outer(
             np.hanning(self.upscale_sz),
             np.hanning(self.upscale_sz))
-        self.hann_window_sigmoid = self.hann_window
-        self.hann_window_sigmoid = 1. / (1. + np.exp(-self.hann_window_sigmoid))
         
         self.hann_window /= self.hann_window.sum() # 分布归一化，得到的值小于 1 / (272 * 272)
-        self.hann_window_sigmoid /= self.hann_window_sigmoid.sum() # 分布归一化，得到的值小于 1 / (272 * 272)
         
         # 缩放因子，意义需要在下文再解释
         self.scale_factors = self.cfg.scale_step ** np.linspace(
@@ -271,126 +268,6 @@ class TrackerSiamFC(Tracker):
             return box, response, sz_in_img
         else:
             return box, sz_in_img
-    
-    @torch.no_grad()
-    def update_sigmoid(self, img): ##### 就是输入匹配帧，然后根据模板图像匹配，最后生成标注框
-        # 设置成评估模式，因为训练的时候其实压根没用这个函数（
-        self.net.eval()
-
-        # 根据上一帧得到的图片中心，裁剪出搜索
-        ## 首先，图像为 (h, w, 3) 
-        ## 其次，在中心点 (y, x) 裁剪出 x_sz * f 的图像, f 为缩放因子 (0.964, 1.000, 1.0375), 目的是为了得到三个尺度的样本图
-        ## 以调整 bounding box 的大小
-        ## 最后裁剪后，输出的图像都是 255 * 255 的大小
-        # global st1, _t1, st2, _t2, st3, _t3
-        
-        # self.avg_color = (0, 0, 0)
-        
-        # st1 = time.time()
-        x = [ops.crop_and_resize(
-            img, self.center, self.x_sz * f,
-            out_size=self.cfg.instance_sz,
-            border_value=self.avg_color) for f in self.scale_factors]
-        # _t1 += time.time() - st1
-        
-        # st2 = time.time()
-        # x_ = [ops_torch.crop_and_resize_optimized(
-        #     img, self.center, self.x_sz * f,
-        #     out_size=self.cfg.instance_sz,
-        #     border_value=self.avg_color) for f in self.scale_factors]
-        # _t2 += time.time() - st2
-        
-        
-
-        
-        x = np.stack(x, axis=0) # 转换为 numpy.ndarray, (3, 255, 255, 3)
-        x = torch.from_numpy(x).to(
-            self.device).permute(0, 3, 1, 2).float() # (3, 3, 255, 255) 
-        
-        
-        # 得到搜索区域提取得到的特征图
-        responses = self.get_resized_response(x)
-        responses = responses.squeeze(1).cpu().numpy() # 压缩 1 维度，获得 (3, 272, 272)
-        
-        responses[:self.cfg.scale_num // 2] *= self.cfg.scale_penalty # 权值的尺度惩罚 0.9745，因为缩小了
-        responses[self.cfg.scale_num // 2 + 1:] *= self.cfg.scale_penalty # 权值的尺度惩罚 0.9745，因为放大了
-
-        # peak scale，比较所有采样图的峰值处谁最高，就要 (0, 1, 2) 中的哪一张 
-        scale_id = np.argmax(np.amax(responses, axis=(1, 2)))
-
-        # peak location，终于找到采样图了 (272, 272)
-        response = responses[scale_id]
-        origin_response = responses[scale_id]
-        response = 1. / (1. + np.exp(-response))
-        response /= response.sum() + 1e-16 # 分布归一化
-        
-        response = (1 - self.cfg.window_influence) * response + \
-            self.cfg.window_influence * self.hann_window_sigmoid # (1-a) * M + a * H，一定程度地抑制边缘(但程度不大......)，仍分布归一化
-        loc = np.unravel_index(response.argmax(), response.shape) # 找到峰值坐标并变成元组
-
-        # 绘制采样图，查看情况
-        
-        response_img, rp_mmin, rp_mmax = ops.show_response(response)
-        
-        # 绘制得到的采样图的原始数据
-        '''
-        plt.imshow(origin_response, cmap='viridis', interpolation='nearest')
-        mmin = np.min(origin_response)
-        mmax = np.max(origin_response)
-        avg = np.average(origin_response)
-        plt.title("mmin: " + str(mmin) + "\nmmax: " + str(mmax) + "\navg: " + str(avg))
-        plt.colorbar()  # 添加颜色条
-        plt.show()
-        '''
-        # 绘制对整张图进行卷积得到的响应
-        '''
-        self.response_for_whole(img)
-        '''  
-        # 把采样图尝试映射回原图大小，看看效果
-        ## 首先采样图已经被缩放为 272*272，所以要首先映射回 272 * 8 / 16 = 136 得到样本图大小
-        ## 然后再 136 * (x_xz * scale_factor / instance_sz) 得到原图像大小
-        ## 最后把热度图嵌入原图像（也就是当前的中心），并设置其它地方为 0 
-        
-        # size_in_image = np.asarray(response.shape) * self.cfg.total_stride / self.cfg.response_up \
-        #     * self.x_sz * self.scale_factors[scale_id] / self.cfg.instance_sz
-        # size_in_image = np.round(size_in_image).astype(int)
-        # for i in range(0, len(size_in_image)):
-        #     if size_in_image[i] % 2 == 0:
-        #         size_in_image[i] += 1
-        # assert size_in_image[0] % 2 == 1 and size_in_image[1] % 2 == 1 # 保证是奇数，这样才好有中心
-        # # response_in_img = ops.show_response_in_img(img, np.asarray(img.shape), response, size_in_image, self.center, 
-        #                                            border_value=self.avg_color)
-        
-        
-        # 峰值点映射回原图的位置，并更新位置
-        disp_in_response = np.array(loc) - (self.upscale_sz - 1) / 2 # 响应图中，峰值位置减去中心位置，就是偏移量
-        disp_in_instance = disp_in_response * self.cfg.total_stride / self.cfg.response_up # 由响应图位移倒推样本图位移
-        disp_in_image = disp_in_instance * (self.x_sz * self.scale_factors[scale_id]) / \
-            self.cfg.instance_sz # 由样本图倒推原图像位移
-        self.center += disp_in_image # 得到新的中心
-
-        # 以 0.59 的学习率更新目标大小
-        scale =  (1 - self.cfg.scale_lr) * 1.0 + \
-            self.cfg.scale_lr * self.scale_factors[scale_id]
-        self.target_sz *= scale
-        self.z_sz *= scale
-        self.x_sz *= scale
-
-        # 返回 (lx, ly, w, h) 形式的 box
-        # return 1-indexed and left-top based bounding box
-        box = np.array([
-            self.center[1] + 1 - (self.target_sz[1] - 1) / 2,
-            self.center[0] + 1 - (self.target_sz[0] - 1) / 2,
-            self.target_sz[1], self.target_sz[0]])
-
-        if self.failure_path is not None:
-            self.failure_save.rps.append(response_img)
-            self.failure_save.rps_mmin.append(rp_mmin)
-            self.failure_save.rps_mmax.append(rp_mmax)
-            self.failure_save.imgs_rp.append(response_in_img)
-        
-        return box
- 
     
     def track(self, img_files, box, anno, seq_name='',
               visualize=False, video_save=False, is_record_delta=False):
@@ -638,5 +515,3 @@ class TrackerSiamFC(Tracker):
                                interpolation=cv2.INTER_CUBIC)
         ops.show_whole_img_response(img, responses)
     
-    def _failure_save(self, imgs, imgs_rp, rp, boxes, annos, indexes, save_dir):
-        pass 

@@ -330,7 +330,9 @@ class CANN_Tracker(Tracker):
         '''
         Functions: 进行一整个序列的追踪, 进行评估或者训练。
         Params: img_files[图像序列的路径]; box[第一帧的标注框]; anno[所有帧的标注框]; seq_name[视频序列的名字];
-                is_train[是否训练]; visualize[是否可视化]; video_save[是否保存视频]
+                is_train[是否训练]; 
+                visualize[是否可视化]; 
+                is_record_delta[是否记录中心误差]
         '''
         # 初始化一些参数
         frame_num = len(img_files) # 有多少帧
@@ -347,8 +349,8 @@ class CANN_Tracker(Tracker):
             delta = []
         if is_train:
             total_turns = len(img_files) # 总追踪轮数
-            video_ce2 = 0 # video center error square 总和
-            video_ce = 0 # video center error 总和
+            video_ce2 = 0 # 整个视频的中心误差平方总和
+            video_ce = 0 # 整个视频的中心误差总和
             ce2_per_frame_cann = [] # 每帧的中心误差平方(CE^2)
             ce_per_frame_cann = [] # 每帧的中心误差(CE)
             stop_recording = False
@@ -357,10 +359,7 @@ class CANN_Tracker(Tracker):
         for f, img_file in enumerate(img_files): 
             img = ops.read_image(img_file) # 读入图像，格式为: RGB, [0, 255], shape=(h, w, 3)
             begin = time.time()
-            
-            # if f == 383:
-            #     print("!")
-            
+        
             if f == 0: # 第一帧，抽取模板图像，生成卷积核
                 self.init(img, box, is_train=is_train) 
                 sz = 1
@@ -373,14 +372,16 @@ class CANN_Tracker(Tracker):
             pre_img = img
             times[f] = time.time() - begin
             
-            if is_record_delta:
+            if is_record_delta: # 如果需要记录中心误差，那么每次记录 (del_in_res, del_in_img)
                 search_center, _ = ops.get_center_sz(boxes[f - 1])
                 gt_center, _ = ops.get_center_sz(annos[f])
-                gt_disp_in_image = search_center - gt_center
-                gt_disp_in_res = gt_disp_in_image * self.cfg.len / sz
-                delta.append(np.linalg.norm(gt_disp_in_res))    
+                gt_disp_in_img = search_center - gt_center
+                gt_disp_in_res = gt_disp_in_img * self.cfg.len / sz
+                delta.append(
+                    (np.linalg.norm(gt_disp_in_res), np.linalg.norm(gt_disp_in_img))
+                )    
             
-            if is_train:
+            if is_train: # 如果处于训练模式，那么记录中心误差并反向传播
                 gt_center, _ = ops.get_center_sz(annos[f])
                 frame_ce2 = self.criterion(self.center, torch.from_numpy(gt_center)) # 获取含有梯度的中心误差, ce ** 2
                 frame_ce = torch.sqrt(frame_ce2).item() # 获取中心误差, ce
@@ -459,28 +460,11 @@ class CANN_Tracker(Tracker):
         szs_in_img = self.upscale_sz * (self.cfg.total_stride / self.cfg.response_up) \
                                         * (self.x_sz * self.scale_factors) / self.cfg.instance_sz # 获得响应图在原图中的对应尺寸
         
-        # global st1, _t1, st2, _t2, st3, _t3
-        # st1 = time.time()
-        # _responses, movements, mixed, szs = ops.get_cann_inputs(
-        #     pre_img, img,
-        #     responses.cpu().detach().numpy(), szs_in_img,
-        #     self.center.detach().numpy(), self.cfg.len
-        # ) # 获得尺寸为 (3, 271, 271) 的 responses, movements, mixed, 以及对 szs_in_img 取整的 szs
-        # _t1 += time.time() - st1
-        
-        ############
-        # st2 = time.time()
         _responses, movements, mixed, szs = ops_torch.get_cann_inputs_optimized(
             pre_img, img,
             responses.cpu().detach().numpy(), szs_in_img,
             self.center.detach().numpy(), self.cfg.len
         )
-        # _t2 += time.time() - st2
-        # assert np.all(__responses == _responses), "Responses"
-        # assert np.all(_movement == movements), "Movements"
-        # assert np.all(_mixed == mixed), "Mixed"
-        
-        ############
         
         
         # 第三步：送入 CANN 进行处理
@@ -495,14 +479,9 @@ class CANN_Tracker(Tracker):
         if self.last_input == None:
             self.last_input = inputs_tensor
         
-        
-        
-        # torch.cuda.synchronize()
-        # starter, ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-        # starter.record()
+    
         
         th = self.cfg.steps
-        # ops.show_response(self.net.u[0].cpu().detach().numpy(), visualize=True, save=None)
         for k in range(self.cfg.steps): # 进行 8 轮的动力学响应
             # if k + 1 <= th:
             #     real_input = (1 - (k + 1) / th) * self.last_input + (k + 1) / th * inputs_tensor
@@ -511,14 +490,7 @@ class CANN_Tracker(Tracker):
             real_input = inputs_tensor
             self.runner.set_input_directly(real_input)
             self.runner.execute(self.cfg.dt)
-            # ops.show_response(real_input[0].cpu().detach().numpy(), visualize=True, save=None)
             pass
-        
-        # ender.record()
-        # torch.cuda.synchronize()
-        # curr_time = starter.elapsed_time(ender)
-        # global _t1
-        # _t1 += curr_time
         
         self.last_input = inputs_tensor
         
@@ -618,146 +590,6 @@ class CANN_Tracker(Tracker):
         else:
             return box, sz
           
-    def update_test(self, pre_img, img, is_train=False, visualize=False, video_saving=False): 
-        # 第一步：获得 responses
-        self.siamfc.net.eval()
-        instance = ops.get_instance(
-            img, self.cfg.instance_sz, self.center.detach().numpy(), 
-            self.x_sz, self.scale_factors
-        )
-        responses = self.get_resized_response(self.kernel, instance) # 获取 (3, 1, 272, 272) 的响应图
-        responses = responses.squeeze() # 压缩维度, (3, 272, 272)
-        responses = responses * torch.tensor(self.scale_penalty, device=device).unsqueeze(-1).unsqueeze(-1) # 施加尺度的惩罚因子
-
-        # 第二步：获得 cann 的 inputs
-        szs_in_img = self.upscale_sz * (self.cfg.total_stride / self.cfg.response_up) \
-                                        * (self.x_sz * self.scale_factors) / self.cfg.instance_sz # 获得响应图在原图中的对应尺寸
-        
-        # global st1, _t1, st2, _t2, st3, _t3
-        # st1 = time.time()
-        # _responses, movements, mixed, szs = ops.get_cann_inputs(
-        #     pre_img, img,
-        #     responses.cpu().detach().numpy(), szs_in_img,
-        #     self.center.detach().numpy(), self.cfg.len
-        # ) # 获得尺寸为 (3, 271, 271) 的 responses, movements, mixed, 以及对 szs_in_img 取整的 szs
-        # _t1 += time.time() - st1
-        
-        ############
-        # st2 = time.time()
-        _responses, movements, mixed, szs = ops_torch.get_cann_inputs_optimized(
-            pre_img, img,
-            responses.cpu().detach().numpy(), szs_in_img,
-            self.center.detach().numpy(), self.cfg.len
-        )
-        # _t2 += time.time() - st2
-        # assert np.all(__responses == _responses), "Responses"
-        # assert np.all(_movement == movements), "Movements"
-        # assert np.all(_mixed == mixed), "Mixed"
-        
-        ############
-        
-        
-        # 第三步：送入 CANN 进行处理
-        movements_tensor = torch.from_numpy(movements).to(device)
-        responses_tensor = torch.from_numpy(_responses).to(device)
-        mixed_tensor = torch.from_numpy(mixed).to(device)
-        
-        inputs_tensor = 0.05 * responses_tensor # + self.net.factor1 * movements_tensor + self.net.factor2 * mixed_tensor
-        inputs_tensor = self.net.factor0 * inputs_tensor
-        inputs_tensor = torch.maximum(torch.zeros_like(inputs_tensor), inputs_tensor) # ReLU, 禁止负值的出现(否则可能让 u 出现负数)
-        inputs_tensor = inputs_tensor.to(device)
-        if self.last_input == None:
-            self.last_input = inputs_tensor
-        
-        
-        
-        # torch.cuda.synchronize()
-        # starter, ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-        # starter.record()
-        
-        th = self.cfg.steps
-        # ops.show_response(self.net.u[0].cpu().detach().numpy(), visualize=True, save=None)
-        for k in range(self.cfg.steps): # 进行 8 轮的动力学响应
-            # if k + 1 <= th:
-            #     real_input = (1 - (k + 1) / th) * self.last_input + (k + 1) / th * inputs_tensor
-            # else:
-            #     real_input = inputs_tensor
-            real_input = inputs_tensor
-            self.runner.set_input_directly(real_input)
-            self.runner.execute(self.cfg.dt)
-            # ops.show_response(real_input[0].cpu().detach().numpy(), visualize=True, save=None)
-            pass
-        
-        # ender.record()
-        # torch.cuda.synchronize()
-        # curr_time = starter.elapsed_time(ender)
-        # global _t1
-        # _t1 += curr_time
-        
-        self.last_input = inputs_tensor
-        
-        # 第四步, 根据 siamfc 的操作, 找到最匹配的尺度(响应值最大的尺度)
-        max_index = torch.argmax(torch.max(responses.reshape(self.cfg.scale_num, -1), dim=1).values)
-        response = responses[max_index] # 取出对应响应图
-        cann_u = self.net.u[max_index]# 取出对应的 u
-        sz = szs[max_index] # 取出对应的 sz
-        
-        # 第五步, 获得最终的响应图
-        ## 按照 siamfc, 对 response 进行边缘抑制
-        response = response - torch.min(response)
-        response = response / torch.sum(response) + 1e-16
-        response = (1 - self.cfg.window_influence) * response + \
-            self.cfg.window_influence * torch.tensor(self.hann_window, device=device)
-    
-        
-        # 第六步, 获得响应图中的最大值(软最大值)处
-        if is_train == False:
-            max_indice4res = torch.argmax(response.reshape(-1))
-            max_position4res = torch.stack((max_indice4res // response.shape[1], 
-                                            max_indice4res %  response.shape[1]))
-            max_indice4cann = torch.argmax(cann_u.detach().reshape(-1))
-            max_position4cann = torch.stack((max_indice4cann // cann_u.shape[1],  
-                                            max_indice4cann % cann_u.shape[1]))
-        elif is_train == True:
-            max_position4mix = self.criterion.get_center(modified_response.unsqueeze(0)).cpu()
-        
-        ## 这里找到 cann 的中心, 为之后进行循环位移做准备
-        cann_center = max_position4cann
-        
-        
-        # 对两种预测值进行线性向量加权
-        max_position4mix = self.net.mix_factor * max_position4res + (1 - self.net.mix_factor) * max_position4cann
-        max_position4mix = max_position4mix.cpu()
-        
-        # 第六步，获取对中心的预测
-        disp_in_res = max_position4mix - self.constant_center
-        disp_in_img = disp_in_res / self.cfg.len * sz
-        self.center += disp_in_img.squeeze() # 更新中心位置
-        self.net.roll(max_index, self.constant_center - cann_center.cpu())
-        self.last_input = ops.roll(self.last_input, max_index, disp_in_res, 
-                 self.cfg.scale_num, self.cfg.len)
-        
-        # 第七步，获取对尺寸的预测
-        scale =  (1 - self.cfg.scale_lr) * 1.0 + \
-            self.cfg.scale_lr * self.scale_factors[max_index]
-        self.target_sz *= scale
-        self.x_sz *= scale
-        
-        # 第八步：从 chw/(cy, cy, h, w)格式转为 ltwh/(lx, ly, w, h) 形式的 box, 坐标系从 1 开始
-        box = np.array([
-            (self.center[1].detach().numpy() + 1) - (self.target_sz[1] - 1) / 2,
-            (self.center[0].detach().numpy() + 1) - (self.target_sz[0] - 1) / 2,
-            self.target_sz[1],
-            self.target_sz[0]
-        ])
-        
-        if video_saving:
-            return box, modified_response.cpu().detach().numpy(), \
-                inputs_tensor[max_index].cpu().detach().numpy(), c_max_position.cpu().detach().numpy(), sz
-        else:
-            return box, sz
-        
-    
     @torch.no_grad()    
     def update_like_siamfc(self, pre_img, img, is_train=False, visualize=False): 
         '''
