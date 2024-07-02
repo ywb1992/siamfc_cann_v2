@@ -1,3 +1,6 @@
 pretrained/
 reports/
 results/
+model_eval/
+model_eval_OTB100/
+model_eval_GOT10K/
