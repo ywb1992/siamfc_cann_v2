@@ -10,7 +10,7 @@ import torchvision
 from matplotlib import pyplot as plt
 from scipy.ndimage import gaussian_filter
 
-from . import calc
+from . import num_ops
 
 cuda = torch.cuda.is_available()
 device = torch.device('cuda:0' if cuda else 'cpu')
@@ -46,6 +46,9 @@ def read_image(img_file, cvt_code=cv2.COLOR_BGR2RGB):
 def show_image(img, boxes=None, box_fmt='ltwh', colors=None,
                thickness=3, fig_n=1, delay=1, visualize=True,
                cvt_code=cv2.COLOR_RGB2BGR):
+    '''
+    Functions: 显示图片, 并在图片上绘制 bounding boxes
+    '''
     if cvt_code is not None:
         img = cv2.cvtColor(img, cvt_code)
     
@@ -106,6 +109,9 @@ def show_image(img, boxes=None, box_fmt='ltwh', colors=None,
 
 def show_response(response, pre_coor, gt_coor, colors=[(255, 255, 255), (255, 0, 0), (0, 255, 0)],
                   fig_n=2, delay=1, visualize=True, scale_factor=3):
+    '''
+    Functions: 显示响应图, 并在图中标记出预测和真实位置
+    '''
     response = cv2.resize(response, (response.shape[1] * scale_factor, response.shape[0] * scale_factor))
     ori_response = response
     response = (response - np.min(response)) / (np.max(response) - np.min(response))
@@ -136,6 +142,9 @@ def show_response_in_img(img, img_shape, response, response_shape, center,
                          fig_n=3, delay=1, visualize=True,
                          border_type=cv2.BORDER_CONSTANT,
                          border_value=(0, 0, 0)):
+    '''
+    Functions: 将响应图映射回原图, 并叠加在原图上
+    '''
     # center: (x, y)
     center = np.array([center[1], center[0]])  # (x, y) -> (y, x)
     response_shape = np.round(response_shape).astype(int)
@@ -182,26 +191,13 @@ def show_response_in_img(img, img_shape, response, response_shape, center,
         cv2.waitKey(delay)
         return response_in_img
 
-def show_whole_img_response(img, responses, fig_n=4, delay=1, visualize=True):
-    # 最大最小值归一化
-    responses = (responses - np.min(responses)) / (np.max(responses) - np.min(responses))
-    responses = (responses * 255).astype(np.uint8)
-    
-    responses = cv2.applyColorMap(responses, cv2.COLORMAP_JET)
-    whole_img_responses = cv2.addWeighted(responses, 0.4, img, 0.6, 0)
-    if visualize:
-        winname = 'window_{}'.format(fig_n)
-        cv2.imshow(winname, whole_img_responses)
-        cv2.waitKey(delay)
-
-
 
 def crop_and_resize(img, center, size, out_size,
                               border_type=cv2.BORDER_CONSTANT,
                               border_value=(0, 0, 0),
                               interp=cv2.INTER_LINEAR):
     '''
-    函数：优化的图像裁剪并缩放功能。
+    Functions: 优化的图像裁剪并缩放功能。
     先裁剪，如果裁剪区域部分在图像外，则对裁剪后的图像进行填充。
     '''
     size = round(size)
@@ -296,7 +292,7 @@ def get_cann_inputs(pre_img, img, responses, szs, center, cann_len):
     '''
     num = szs.shape[0] # 获得图片总数(3张)
     dif = get_frame_difference(pre_img, img) # 获得差分图像
-    center, szs = np.round(center), calc.odd(szs) # 进行取整操作; odd 是保证为奇数
+    center, szs = np.round(center), num_ops.odd(szs) # 进行取整操作; odd 是保证为奇数
     responses = responses[:, 0:cann_len, 0:cann_len] # 获取 271 * 271 的响应图像
     
     # 找到图中的对应区域，并裁剪下来
@@ -444,47 +440,6 @@ def add_arrow(image, start_point, end_point,
     # 再绘制箭头主体
     cv2.arrowedLine(image, start_point, end_point, arrow_color, arrow_thickness, tipLength=0.3)
     return image
-    
-  
-    
-    
-def crop_and_resize_v0(img, center, size, out_size,
-                    border_type=cv2.BORDER_CONSTANT,
-                    border_value=(0, 0, 0),
-                    interp=cv2.INTER_LINEAR):
-    '''
-    Functions: 内置函数, 将图像裁剪并缩放成 out_size * out_size
-    '''
-    # 从 img 中，以 center 为中心，裁剪出大小为 size * size 的图像，然后缩放成 out_size * out_size
-    ## 当然有对超出边界的特殊处理
-    # convert box to corners (0-indexed)
-    size = round(size)
-    corners = np.concatenate((
-        np.round(center - (size - 1) / 2),
-        np.round(center - (size - 1) / 2) + size)) # 得到左上角和右下角 (ly, lx, ry, rx)
-    corners = np.round(corners).astype(int) # 变换为整数
 
-    # 比如目标在边边角角，那么对图像进行填充
-    ## pads = (-ly, -lx, ry - img_h, rx - img_w)
-    ## npad: 计算需要填充的最大数目，也就是 pads 中大于 0 的最大值
-    pads = np.concatenate((
-        -corners[:2], corners[2:] - img.shape[:2]))
-    npad = max(0, int(pads.max()))
-    ## 这里用 img 的三通道均值 RGB = (R_mean, G_mean, B_mean) 将 img 进行填充得到 img'（直到需要裁剪的部分完全在 img' 中）
-    if npad > 0:
-        img = cv2.copyMakeBorder(
-            img, npad, npad, npad, npad,
-            border_type, value=border_value)
-
-    # 填充完保证裁剪在区域内后，再进行裁剪
-    ## 首先由于填充，img 的 (0, 0) 已经变成了 img' 中的 (npad, npad)，所以要把矩形框 corners 平移 npad
-    corners = (corners + npad).astype(int)
-    patch = img[corners[0]:corners[2], corners[1]:corners[3]]
-
-    # 缩放回目标尺寸，也就是 out_size * out_size (127 * 127 或者 256 * 256）
-    patch = cv2.resize(patch, (out_size, out_size),
-                       interpolation=interp)
-
-    return patch
        
    

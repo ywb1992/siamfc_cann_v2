@@ -505,13 +505,4 @@ class TrackerSiamFC(Tracker):
 
         return True
 
-    def response_for_whole(self, img):
-        x = torch.from_numpy(img).to(self.device).permute(2, 0, 1).unsqueeze(0).float()
-        x = self.net.backbone(x) # (1, 256, *, *)
-        responses = self.net.head(self.kernel, x)
-        responses = responses.squeeze().cpu().numpy()
-        responses = cv2.resize(responses, 
-                               (img.shape[1], img.shape[0]),
-                               interpolation=cv2.INTER_CUBIC)
-        ops.show_whole_img_response(img, responses)
     

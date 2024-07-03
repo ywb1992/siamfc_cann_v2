@@ -11,7 +11,7 @@ import torchvision.transforms.functional as TF
 from matplotlib import pyplot as plt
 from scipy.ndimage import gaussian_filter
 
-from utils import calc
+from utils import num_ops
 
 cuda = torch.cuda.is_available()
 device = torch.device('cuda:0' if cuda else 'cpu')
@@ -74,31 +74,28 @@ def get_frame_difference_torch(img1, img2):
     diff = img2 - img1
     return diff
 
-def get_cann_inputs_optimized(pre_img, img, responses, szs, center, cann_len):
+def get_cann_inputs_optimized(pre_img, img, response, sz, center, cann_len):
     '''
-    Functions: 返回响应图, 运动图, 混合图, 以及取整后的尺寸(均为 (3, 271, 271))
+    Functions: 返回响应图, 运动图, 混合图, 以及取整后的尺寸(均为 (1, 271, 271))
     '''
-    _szs = szs
-    num = szs.shape[0] # 获得图片总数(3张)
-    center, szs = np.round(center), calc.odd(szs) # 进行取整操作; odd 是保证为奇数
+    center, sz = np.round(center), num_ops.odd(sz) # 进行取整操作; odd 是保证为奇数
     
     # 找到图中的对应区域，并裁剪下来
-    ## 实际上, szs[0] < szs[1] < szs[2]
     ## 首先计算响应图映射回原图像后的边界：(ly, lx, ry, rx)
     response_corners = np.asarray(
-                        [center[0] - (szs[-1] - 1) / 2,
-                         center[1] - (szs[-1] - 1) / 2,
-                         center[0] + (szs[-1] - 1) / 2 + 1,
-                         center[1] + (szs[-1] - 1) / 2 + 1], dtype=np.int32)  # shape = (4, )
+                        [center[0] - (sz - 1) / 2,
+                         center[1] - (sz - 1) / 2,
+                         center[0] + (sz - 1) / 2 + 1,
+                         center[1] + (sz - 1) / 2 + 1], dtype=np.int32)  # shape = (4, )
     
     ## 获得左上角和右下角的坐标
-    n, h, w = szs.shape[0], img.shape[0], img.shape[1]
+    h, w = img.shape[0], img.shape[1]
     top_left = response_corners[:2]
     bottom_right = response_corners[2:]
     top_left_clamped = np.clip(top_left, 0, [h, w])
     bottom_right_clamped = np.clip(bottom_right, 0, [h, w])
     
-    ## 那么, 我们就首先把 szs[2] 的部分在 pre_img, img 中取下来
+    ## 那么, 我们进行裁剪
     dif = get_frame_difference(img[top_left_clamped[0] : bottom_right_clamped[0],
                                     top_left_clamped[1] : bottom_right_clamped[1]],
                                pre_img[top_left_clamped[0] : bottom_right_clamped[0],
@@ -119,33 +116,22 @@ def get_cann_inputs_optimized(pre_img, img, responses, szs, center, cann_len):
         dif = cv2.copyMakeBorder(dif, padding[0], padding[2], padding[1], padding[3],
                                  borderType=cv2.BORDER_CONSTANT, value=(0, 0, 0))
     
-    ## 现在, dif 理当是 (szs[2], szs[2]) 的图像了
-    assert dif.shape[0] == dif.shape[1] == szs[-1]
-    
-    ## 所以, 我们按照 szs[0], szs[1] 的大小, 对 dif 进行裁剪
-    difs = [dif[(szs[-1] - szs[k]) // 2 : (szs[-1] + szs[k]) // 2,
-                (szs[-1] - szs[k]) // 2 : (szs[-1] + szs[k]) // 2] for k in range(num)]
-    assert difs[0].shape[0] == difs[0].shape[1] == szs[0]
-    assert difs[1].shape[0] == difs[1].shape[1] == szs[1]
+    ## 现在, dif 理当是 (sz, sz) 的图像了
+    assert dif.shape[0] == dif.shape[1] == sz
     
     ## 然后，取下 padded_dif 对应位置，与 responses 相乘得到 mixed; 并施加平均值
-    movements = np.asarray([
-        cv2.blur(
-            cv2.resize(difs[k],(cann_len, cann_len), interpolation=cv2.INTER_CUBIC), (19, 19)
-        )
-    for k in range(num)])
+    movement = cv2.blur(cv2.resize(dif,(cann_len, cann_len), interpolation=cv2.INTER_CUBIC), (19, 19))
+    movement = np.abs(movement)
+    mixed = response * movement
     
-    movements = np.abs(movements)
-    mixeds = responses * movements
-    
-    return responses, movements, mixeds, _szs
+    return movement, mixed
 
 def get_cann_inputs_optimized_2(pre_img, img, responses, szs, center, cann_len):
     '''
     Functions: 返回响应图, 运动图, 混合图, 以及取整后的尺寸(均为 (3, 271, 271))
     '''
     num = szs.shape[0] # 获得图片总数(3张)
-    center, szs = np.round(center), calc.odd(szs) # 进行取整操作; odd 是保证为奇数
+    center, szs = np.round(center), num_ops.odd(szs) # 进行取整操作; odd 是保证为奇数
     
     # 找到图中的对应区域，并裁剪下来
     ## 实际上, szs[0] < szs[1] < szs[2]
@@ -215,7 +201,7 @@ def get_cann_inputs_torch(pre_img, img, responses, szs, center, cann_len):
     Functions: 返回响应图, 运动图, 混合图, 以及取整后的尺寸(均为 (3, 271, 271))
     '''
     num = szs.shape[0] # 获得图片总数(3张)
-    center, szs = np.round(center), calc.odd(szs) # 进行取整操作; odd 是保证为奇数
+    center, szs = np.round(center), num_ops.odd(szs) # 进行取整操作; odd 是保证为奇数
     
     # 找到图中的对应区域，并裁剪下来
     ## 实际上, szs[0] < szs[1] < szs[2]
