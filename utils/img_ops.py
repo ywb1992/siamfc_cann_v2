@@ -116,14 +116,119 @@ def get_instance(img, instance_sz,
 
 def get_frame_difference(img1, img2):
     '''
-    Functions: 转化为灰度图, 并计算差分
+    Functions: 接受灰度图, 并计算差分
     '''
-    img1, img2 = cv2.cvtColor(img1, cv2.COLOR_RGB2GRAY), cv2.cvtColor(img2, cv2.COLOR_RGB2GRAY)
-    img1, img2 = img1 / 255.0, img2 / 255.0
+
+    img1_min, img1_max = np.min(img1), np.max(img1)
+    img2_min, img2_max = np.min(img2), np.max(img2)
+    
+    if img1_min >= 0 and img1_max <= 1 and img2_min >= 0 and img2_max <= 1:
+        pass
+    else:
+        img1, img2 = img1 / 255.0, img2 / 255.0
+        
     diff = np.abs(img1 - img2)
     return diff
 
+
 def get_cann_inputs(pre_img, img, response, sz, center, cann_len):
+    '''
+    Functions: 返回运动图, 混合图, 以及取整后的尺寸(均为 (271, 271))
+    '''
+    center, sz = np.round(center), num_ops.odd(sz) # 进行取整操作; odd 是保证为奇数
+    
+    ## 首先计算响应图映射回原图像后的边界：(ly, lx, ry, rx)
+    response_corners = np.asarray(
+                        [center[0] - (sz - 1) / 2,
+                         center[1] - (sz - 1) / 2,
+                         center[0] + (sz - 1) / 2 + 1,
+                         center[1] + (sz - 1) / 2 + 1], dtype=np.int32)  # shape = (4, )
+    
+    ## 获得左上角和右下角的坐标
+    h, w = img.shape[0], img.shape[1]
+    top_left = response_corners[:2]
+    bottom_right = response_corners[2:]
+    top_left_clamped = np.clip(top_left, 0, [h, w])
+    bottom_right_clamped = np.clip(bottom_right, 0, [h, w])
+    
+    ## 考虑填充量
+    padding = np.asarray([
+        top_left_clamped[0] - top_left[0],  # 上侧填充
+        top_left_clamped[1] - top_left[1],  # 左侧填充
+        bottom_right[0] - bottom_right_clamped[0],  # 下侧填充
+        bottom_right[1] - bottom_right_clamped[1]   # 右侧填充
+    ])
+    
+    ## 考虑需要将裁剪下来的图片缩放到什么尺寸
+    re_img_crop = 1. * (bottom_right_clamped - top_left_clamped) / sz * cann_len
+    re_padding = 1. * padding / sz * cann_len
+    
+    ### 对 re_img_crop 和 re_padding 进行取整操作，但保证取整之后和不变
+    re_img_crop_h = np.round(re_img_crop[0]).astype(np.int32)
+    re_padding_top = np.round(re_padding[0]).astype(np.int32)
+    if re_img_crop_h + re_padding_top > cann_len:
+        re_padding_top -= 1
+    re_padding_bottom = cann_len - re_img_crop_h - re_padding_top
+    
+    re_img_crop_w = np.round(re_img_crop[1]).astype(np.int32)
+    re_padding_left = np.round(re_padding[1]).astype(np.int32)
+    if re_img_crop_w + re_padding_left > cann_len:
+        re_padding_left -= 1
+    re_padding_right = cann_len - re_img_crop_w - re_padding_left
+    
+    re_img_crop_int = (re_img_crop_w, re_img_crop_h) # 注意，resize 接受的是 (w, h), ***
+    re_padding_int = (re_padding_top, re_padding_left, re_padding_bottom, re_padding_right)
+    
+    
+    ## 那么, 我们进行裁剪，而后放缩，再考虑填充
+    img_crop = img[top_left_clamped[0] : bottom_right_clamped[0],
+                   top_left_clamped[1] : bottom_right_clamped[1]]
+    pre_img_crop = pre_img[top_left_clamped[0] : bottom_right_clamped[0],
+                           top_left_clamped[1] : bottom_right_clamped[1]]
+    re_img_crop = cv2.resize(img_crop, re_img_crop_int, 
+                             interpolation=cv2.INTER_LINEAR)
+    re_pre_img_crop = cv2.resize(pre_img_crop, re_img_crop_int,
+                                 interpolation=cv2.INTER_LINEAR)
+    dif = get_frame_difference(re_img_crop, re_pre_img_crop)
+    
+    if np.any(re_padding_int):
+        dif = cv2.copyMakeBorder(dif, re_padding_int[0], re_padding_int[2], re_padding_int[1], re_padding_int[3],
+                                         borderType=cv2.BORDER_CONSTANT, value=(0, 0, 0))
+    
+    
+    ## 现在, dif 理当是 (sz, sz) 的图像了
+    assert dif.shape[0] == dif.shape[1] == cann_len, print(f'({dif.shape[0]}, {dif.shape[1]}), {cann_len}')
+    
+    movement = cv2.blur(dif, (19, 19))
+    mixed = response * movement
+    
+    return movement, mixed  
+
+def upsample(img_tensor, from_scale, to_scale):
+    '''
+    Functions: 执行上采样, 或者说图片放大, 从 from_scale 到 to_scale
+    '''
+    # 假设 imgs 是一个形状为 (bs, 1, 17, 17) 的四维张量
+    img_numpy = img_tensor.cpu().numpy()
+    batch_size = img_tensor.shape[0]
+    channels = img_tensor.shape[1]
+    # 创建一个空的数组来存放上采样后的图像
+    upsampled_imgs = np.zeros((batch_size, channels, to_scale, to_scale), dtype=np.float32)
+
+    # 遍历批量中的每个图像，并分别进行上采样
+    for batch in range(batch_size):
+        for channel in range(channels):
+            # 从 (17, 17) 上采样到 (272, 272)
+            upsampled_imgs[batch, channel] = cv2.resize(
+                img_numpy[batch, channel], (to_scale, to_scale), interpolation=cv2.INTER_CUBIC)
+    
+    upsampled_imgs = torch.tensor(upsampled_imgs, device=device)
+    return upsampled_imgs
+
+
+
+
+def get_cann_inputs_old(pre_img, img, response, sz, center, cann_len):
     '''
     Functions: 返回响应图, 运动图, 混合图, 以及取整后的尺寸(均为 (1, 271, 271))
     '''
@@ -170,28 +275,6 @@ def get_cann_inputs(pre_img, img, response, sz, center, cann_len):
     
     ## 然后，取下 padded_dif 对应位置，与 responses 相乘得到 mixed; 并施加平均值
     movement = cv2.blur(cv2.resize(dif,(cann_len, cann_len), interpolation=cv2.INTER_CUBIC), (19, 19))
-    movement = np.abs(movement)
     mixed = response * movement
     
     return movement, mixed  
-
-def upsample(img_tensor, from_scale, to_scale):
-    '''
-    Functions: 执行上采样, 或者说图片放大, 从 from_scale 到 to_scale
-    '''
-    # 假设 imgs 是一个形状为 (bs, 1, 17, 17) 的四维张量
-    img_numpy = img_tensor.cpu().numpy()
-    batch_size = img_tensor.shape[0]
-    channels = img_tensor.shape[1]
-    # 创建一个空的数组来存放上采样后的图像
-    upsampled_imgs = np.zeros((batch_size, channels, to_scale, to_scale), dtype=np.float32)
-
-    # 遍历批量中的每个图像，并分别进行上采样
-    for batch in range(batch_size):
-        for channel in range(channels):
-            # 从 (17, 17) 上采样到 (272, 272)
-            upsampled_imgs[batch, channel] = cv2.resize(
-                img_numpy[batch, channel], (to_scale, to_scale), interpolation=cv2.INTER_CUBIC)
-    
-    upsampled_imgs = torch.tensor(upsampled_imgs, device=device)
-    return upsampled_imgs

@@ -331,7 +331,7 @@ class CANN_Tracker(Tracker):
         boxes = np.zeros((frame_num, 4)) # 此为输出标注框, 格式为 ltwh/(lx, ly, w, h)
         boxes[0] = box # 初始化第一帧的标注框
         times = np.zeros(frame_num) # 用于记录运行时间
-        pre_img = None # 用于保存上一帧图像
+        pre_img, pre_img_gray = None, None # 用于保存上一帧图像
         vis_enss = [] # 用于保存每一帧的可视化图像(可视化了标注框)
         gt_dist_in_ress = [] # 记录中心误差（在 res 中的）
         gt_dist_in_imgs = [] # 记录中心误差（在 img 中的）
@@ -347,6 +347,7 @@ class CANN_Tracker(Tracker):
         # 遍历每一帧图像, 并追踪
         for f, img_file in enumerate(img_files): 
             img = img_ops.read_image(img_file) # 读入图像，格式为: RGB, [0, 255], shape=(h, w, 3)
+            img_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) # 转化为灰度图
             begin = time.time()
         
             if f == 0: # 第一帧，抽取模板图像，生成卷积核
@@ -356,7 +357,9 @@ class CANN_Tracker(Tracker):
                 if pre_img.shape != img.shape: # 有些训练数据里面有问题，需要跳过
                     break 
                 boxes[f], sz_in_img, gt_dist_in_res, gt_dist_in_img, vis_enss = self.update(
-                        pre_img, img, annos[f, :],
+                        pre_img, img, 
+                        pre_img_gray, img_gray,
+                        annos[f, :],
                         is_train=is_train, 
                         is_visualize=is_visualize,
                         is_video_saving=is_video_saving
@@ -364,7 +367,7 @@ class CANN_Tracker(Tracker):
             vis_enss.append(vis_enss)
             
             
-            pre_img = img
+            pre_img, pre_img_gray = img, img_gray
             times[f] = time.time() - begin
             
             # 记录中心误差 (dist_in_res, dis_in_img)
@@ -431,7 +434,9 @@ class CANN_Tracker(Tracker):
             return boxes, times, vis_enss, gt_dist_in_ress, gt_dist_in_imgs
         # 返回[每一帧的标注框], [每一帧图像的用时], [每一帧的可视化图像], [每一帧的 res 中心误差], [每一帧的 img 中心误差]
     
-    def update(self, pre_img, img, anno,
+    def update(self, pre_img, img,
+               pre_img_gray, img_gray,
+               anno,
                is_train=False, 
                is_visualize=False, is_video_saving=False): 
         '''
@@ -457,7 +462,7 @@ class CANN_Tracker(Tracker):
         
         # 第三步：获得 cann 的 inputs
         movement, mixed = img_ops.get_cann_inputs(
-            pre_img, img,
+            pre_img_gray, img_gray,
             response.cpu().detach().numpy(), sz_in_img,
             self.center.detach().numpy(), self.cfg.len
         )
@@ -624,7 +629,6 @@ class CANN_Tracker(Tracker):
         self.net.train()
 
         # 这里定义了数据集和数据加载器
-        ## 训练数据集为 GOT-10K
         dataset = CANN_Pair(
             siamfc=self.siamfc,
             seqs=seqs,
