@@ -35,7 +35,7 @@ class Tracker(object):
             'context': 0.50,
             # cann parameters
             'len': 85, # 
-            'steps': 10, # CANN 进行动力学响应的轮数
+            'steps': 8, # CANN 进行动力学响应的轮数
             'dt': 1, # 时间步长，默认为 1
             'tolerance_height': 0.80,
             'tolerance_dis': 64,
@@ -63,7 +63,7 @@ class Tracker(object):
             'total_stride': 8, # 步距参考 Alexnet 里面的卷积层, 2 * 2 * 2 = 8
             # train parameters
             'epoch_num': 200, # 训练总轮数
-            'batch_size': 4, # 批次大小
+            'batch_size': 8, # 批次大小
             'num_workers': 0, # 载入数据的线程数
             'initial_lr': 1e-2, # 初始学习率（指数衰减学习率）
             'ultimate_lr': 1e-4, # 终止学习率（指数衰减学习率）

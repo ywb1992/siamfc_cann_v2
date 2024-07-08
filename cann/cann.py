@@ -185,7 +185,8 @@ class CANN_Tracker(Tracker):
     '''
     Functions: SiamFC+CANN 追踪器，包含了追踪(评估)模块与训练模块
     '''
-    def __init__(self, net_path=None, cann_path=None, failure_path=None, mode='test', tracker_name='SiamFC_CANN', **kwargs):
+    def __init__(self, net_path=None, cann_path=None, 
+                 mode='test', tracker_name='SiamFC_CANN', **kwargs):
         '''
         Functions: 初始化所有基本参数; 父类为 got10k.trackers.Tracker. 父类的方法里初始化了所有超参数: self.cfg
         Params: net_path[siamfc 的预训练模型路径]; cann_path[CANN 的预训练模型路径]; failure_path[失败视频的保存路径]
@@ -197,16 +198,12 @@ class CANN_Tracker(Tracker):
         assert mode in ['test', 'eval', 'train']
         if mode == 'test' or mode == 'eval':
             self.cfg = self.cfg._replace(batch_size=1)
-        
-        # 设置保存路径的信息
-        now = datetime.now()
-        self.formatted_date = now.strftime("%Y_%m_%d_%H_%M_%S") # 获取当前时间，用于保存模型
 
         # 加载 cann 模型, 若有预训练则加载
         self.net = CANN_Network(self.cfg.len, self.cfg.tau, self.cfg.A,
                                 self.cfg.k, self.cfg.a, 
                                 self.cfg.factor0, self.cfg.factor1, self.cfg.factor2, self.cfg.mix_factor,
-                                self.cfg.scale_num)
+                                1)
         if cann_path is not None:
             self.net.load_state_dict(torch.load(
                 cann_path, map_location=lambda storage, loc: storage))
@@ -279,7 +276,7 @@ class CANN_Tracker(Tracker):
         self.constant_center = torch.tensor([[self.cfg.len // 2, self.cfg.len // 2]]).to(device)
         self.net.update_para()
         self.net.set_stable(self.constant_center.broadcast_to(
-            (self.cfg.scale_num, 2)).to(device)) # 初始化稳定在矩阵中心的 cann
+            (1, 2)).to(device)) # 初始化稳定在矩阵中心的 cann
         
         # box 在这里有两种格式, 1. (给定的格式/输入和应当输出的格式) 和 2. 内部处理的格式
         # 给定 box 的格式为 ltwh, 也即 (lx, ly, w, h)/(左上角, 宽, 高)
@@ -289,7 +286,7 @@ class CANN_Tracker(Tracker):
             box[0] - 1 + (box[2] - 1) / 2,
             box[3], box[2]], dtype=np.float32)
         self.center, self.target_sz = box[:2], box[2:] # 获得第一帧的中心点 (cy, cx) 以及尺寸 (h, w)
-        self.center = torch.tensor(self.center)
+        self.center = torch.tensor(self.center).to(device)
         
         # 获得裁剪全图时: 初始帧裁剪区域 z 的大小, 搜索帧裁剪区域 x 的大小 
         context = self.cfg.context * np.sum(self.target_sz) # context = 0.5 * (h + w)
@@ -301,7 +298,7 @@ class CANN_Tracker(Tracker):
         # 然后根据上面的尺寸，裁剪出 z_sz 大小的图像，然后填充并缩放成 127 * 127
         self.avg_color = np.mean(img, axis=(0, 1)) # 获得三通道的均值，用于裁剪区域超出图像时的填充
         z = img_ops.crop_and_resize(
-            img, self.center.detach().numpy(), self.z_sz,
+            img, self.center.cpu().detach().numpy(), self.z_sz,
             out_size=self.cfg.exemplar_sz,
             border_value=self.avg_color)
         
@@ -352,11 +349,11 @@ class CANN_Tracker(Tracker):
         
             if f == 0: # 第一帧，抽取模板图像，生成卷积核
                 self.init(img, box, is_train=is_train) 
-                sz_in_img = 1
+                sz_in_img, gt_dist_in_res, gt_dist_in_img, vis_ens = 1, 0., 0., None
             else: # 后续帧：生成响应图，生成标注框
                 if pre_img.shape != img.shape: # 有些训练数据里面有问题，需要跳过
                     break 
-                boxes[f], sz_in_img, gt_dist_in_res, gt_dist_in_img, vis_enss = self.update(
+                boxes[f], sz_in_img, gt_dist_in_res, gt_dist_in_img, vis_ens = self.update(
                         pre_img, img, 
                         pre_img_gray, img_gray,
                         annos[f, :],
@@ -364,7 +361,7 @@ class CANN_Tracker(Tracker):
                         is_visualize=is_visualize,
                         is_video_saving=is_video_saving
                 ) # 更新标注框，并获得(标注框, 图中尺寸, 可视化图像)
-            vis_enss.append(vis_enss)
+            vis_enss.append(vis_ens)
             
             
             pre_img, pre_img_gray = img, img_gray
@@ -444,7 +441,7 @@ class CANN_Tracker(Tracker):
         '''
         # 第一步：获得 responses
         instance = img_ops.get_instance(
-            img, self.cfg.instance_sz, self.center.detach().numpy(), 
+            img, self.cfg.instance_sz, self.center.cpu().detach().numpy(), 
             self.x_sz, self.scale_factors
         )
         responses = self.get_resized_response(self.kernel, instance) # 获取 (3, 1, 272, 272) 的响应图
@@ -455,8 +452,8 @@ class CANN_Tracker(Tracker):
         # 第二步, 根据 siamfc 的操作, 找到最匹配的尺度(响应值最大的尺度)
         max_index = torch.argmax(torch.max(responses.reshape(self.cfg.scale_num, -1), dim=1).values)
         response = responses[max_index] # 取出对应响应图
-        sz_in_img = self.upscale_sz[max_index] * (self.cfg.total_stride / self.cfg.response_up) \
-                        * (self.x_sz * self.scale_factors) / self.cfg.instance_sz # 获得响应图在原图中的对应尺寸
+        sz_in_img = self.upscale_sz * (self.cfg.total_stride / self.cfg.response_up) \
+                        * (self.x_sz * self.scale_factors[max_index]) / self.cfg.instance_sz # 获得响应图在原图中的对应尺寸
         
 
         
@@ -464,14 +461,14 @@ class CANN_Tracker(Tracker):
         movement, mixed = img_ops.get_cann_inputs(
             pre_img_gray, img_gray,
             response.cpu().detach().numpy(), sz_in_img,
-            self.center.detach().numpy(), self.cfg.len
+            self.center.cpu().detach().numpy(), self.cfg.len
         )
         
         
         # 第四步：送入 CANN 进行处理
-        movement_tensor = torch.from_numpy(movement).to(device)
-        response_tensor = torch.from_numpy(response).to(device).unsqueeze(0)
-        mixed_tensor = torch.from_numpy(mixed).to(device)
+        movement_tensor = torch.from_numpy(movement).to(device).unsqueeze(0)
+        response_tensor = response.unsqueeze(0)
+        mixed_tensor = torch.from_numpy(mixed).to(device).unsqueeze(0)
         
         inputs_tensor = 0.05 * response_tensor + self.net.factor1 * movement_tensor + self.net.factor2 * mixed_tensor
         inputs_tensor = self.net.factor0 * inputs_tensor
@@ -488,6 +485,7 @@ class CANN_Tracker(Tracker):
             self.runner.set_input_directly(real_input)
             self.runner.execute(self.cfg.dt)
             pass
+        cann_u = self.net.u.squeeze()
         
         self.last_input = inputs_tensor
         
@@ -521,9 +519,8 @@ class CANN_Tracker(Tracker):
         disp_in_res = max_position4mix - self.constant_center
         disp_in_img = disp_in_res / self.cfg.len * sz_in_img
         self.center += disp_in_img.squeeze() # 更新中心位置
-        self.net.roll(max_index, self.constant_center - cann_center.cpu())
-        self.last_input = num_ops.roll(self.last_input, max_index, disp_in_res, 
-                 self.cfg.scale_num, self.cfg.len)
+        self.net.roll(0, self.constant_center - cann_center)
+        self.last_input = num_ops.roll(self.last_input, disp_in_res, self.cfg.len)
         
         ## 顺带计算中心误差
         gt_center, _ = img_ops.get_center_sz(anno)
@@ -541,8 +538,8 @@ class CANN_Tracker(Tracker):
         
         # 第九步：从 cchw/(cy, cx, h, w)格式转为 ltwh/(lx, ly, w, h) 形式的 box, 坐标系从 1 开始
         box = np.array([
-            (self.center[1].detach().numpy() + 1) - (self.target_sz[1] - 1) / 2,
-            (self.center[0].detach().numpy() + 1) - (self.target_sz[0] - 1) / 2,
+            (self.center[1].cpu().detach().numpy() + 1) - (self.target_sz[1] - 1) / 2,
+            (self.center[0].cpu().detach().numpy() + 1) - (self.target_sz[0] - 1) / 2,
             self.target_sz[1],
             self.target_sz[0]
         ])
@@ -552,7 +549,7 @@ class CANN_Tracker(Tracker):
         vis_ens = None # 可视化图片的整体
         if is_visualize:
             vis_res = visualization.show_response(response.squeeze().cpu().detach().numpy(), 
-                                        self.center.cpu().detach().numpy(),
+                                        max_position4mix.cpu().detach().numpy(),
                                         gt_center, 
                                         is_visualize=True)
             vis_img = visualization.show_image(img, [box, anno], 
@@ -623,7 +620,7 @@ class CANN_Tracker(Tracker):
         '''
         Functions: 训练整个数据集
         '''
-        save_dir = os.path.join(save_dir, self.formatted_date) # 设置保存路径
+        save_dir = os.path.join(save_dir, gen_ops.get_formatted_date()) # 设置保存路径
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
         self.net.train()

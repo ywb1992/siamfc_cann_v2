@@ -4,7 +4,11 @@
 
 from __future__ import absolute_import, division
 
+import os
+import platform
+import sys
 import time
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -14,10 +18,18 @@ import torchvision
 from matplotlib import pyplot as plt
 from scipy.ndimage import gaussian_filter
 
+from got10k.datasets import OTB, got10k
+from got10k.experiments.got10k import ExperimentGOT10k
+from got10k.experiments.otb import ExperimentOTB
+
 from . import img_ops, num_ops
 
 cuda = torch.cuda.is_available()
 device = torch.device('cuda:0' if cuda else 'cpu')
+work_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..')) # 工作路径，用于存放代码
+parent_path = os.path.abspath(os.path.join(work_path, '..')) # 上一级路径
+sys.path.append(work_path) # 加载工作路径
+
 
 
 def init_weights(model, gain=1):
@@ -36,3 +48,61 @@ def init_weights(model, gain=1):
             nn.init.xavier_uniform_(m.weight, gain)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
+
+def setup_seed(seed):
+    '''
+        func: 固定随机种子
+    '''
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+
+def get_os():
+    '''
+    Functions: 获得当前系统
+    '''
+    if platform.system() == 'Windows':
+        return 'w'
+    elif platform.system() == 'Linux':
+        return 'l'
+    else:
+        return 'unknown'  # 可以增加一个默认返回值，处理其他操作系统的情况
+
+def get_formatted_date():
+    '''
+    Functions: 获取当前时间的字符串形式
+    '''
+    now = datetime.now()
+    return now.strftime("%Y_%m_%d_%H_%M_%S") # 获取当前时间，用于保存模型
+
+def get_data_path(dataset='OTB100', mode='test'):
+    '''
+    Functions: 获取数据路径
+    '''
+    now_os = get_os()
+    if now_os == 'w':
+        data_path = os.path.join(parent_path, 'data/' + mode + '/' + dataset)
+    elif now_os == 'l':
+        data_path = None
+    else:
+        data_path = 'unknown'
+    return data_path
+
+def get_exp_tool(dataset='OTB100', mode='eval', data_dir=None):
+    '''
+    Functions: 获取数据集的评估工具
+    '''
+    if dataset == 'OTB100':
+        return ExperimentOTB(data_dir, version=2015, download=False) # 加载数据集
+    elif dataset == 'GOT10k':
+        return ExperimentGOT10k(data_dir, subset='val') # 加载数据集
+        
+def get_train_tool(dataset='OTB100', mode='train', data_dir=None):
+    '''
+    Functions: 获取数据集的训练工具
+    '''
+    if dataset == 'OTB100':
+        return OTB(data_dir, version=2015, download=False)
+    elif dataset == 'GOT10K':
+        return got10k(data_dir, subset='train')

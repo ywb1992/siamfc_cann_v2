@@ -65,16 +65,15 @@ def distribution_norm(x: torch.Tensor):
     x_distribution_normalized = x / sum_val
     return x_distribution_normalized
 
-def roll(mat, index, dir, scale_num, len):
+def roll(mat, dir, len):
     '''
     Functions: 找到了三个尺度中合适的尺度 index 后, 使其进行朝着 dir 方向进行循环位移. 得到的矩阵复制到其它尺度
     Params: index[三个尺度中, 要移动哪一个]; dir[方向]
     '''
-    mat = mat[index]
     
     dir = torch.round(dir.squeeze().detach()).to(torch.int32)
     dir = tuple(dir.tolist())
     
     mat = torch.roll(mat, shifts=dir, dims=(0, 1))
-    mat = mat.broadcast_to((scale_num, len, len))
+    mat = mat.broadcast_to((1, len, len))
     return mat

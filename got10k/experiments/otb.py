@@ -41,7 +41,7 @@ class ExperimentOTB(object):
         self.nbins_iou = 21
         self.nbins_ce = 51
 
-    def run(self, tracker, visualize=False, is_record_delta=False):
+    def run(self, tracker, is_visualize=False, is_video_saving=False):
 
         print('Running tracker %s on %s...' % (tracker.name, type(self.dataset).__name__)) # type(xxx).__name__ 类型的名字
         
@@ -53,15 +53,15 @@ class ExperimentOTB(object):
             seq_name = self.dataset.seq_names[s] # 获取名字比如 Basketball
     
             record_file = os.path.join(self.result_dir, tracker.name, '%s.txt' % seq_name) # 保存时 tracker 的名字
-            boxes, times, imgs, ce_per_frame = tracker.track(img_files, anno[0, :], 
+            boxes, times, vis_enss, gt_dist_in_ress, gt_dist_in_imgs = tracker.track(img_files, anno[0, :], 
                                         anno, seq_name,
-                                        visualize=visualize, 
-                                        is_record_delta=is_record_delta) # 返回标注框列表和每一帧所用时间
+                                        is_visualize=is_visualize, 
+                                        is_video_saving=is_video_saving) # 返回标注框列表和每一帧所用时间
             
             
             assert len(boxes) == len(anno)
             
-            self._record(record_file, boxes, times, ce_per_frame) # 记录它们
+            self._record(record_file, boxes, times, gt_dist_in_imgs) # 记录它们
 
 
     def report(self, tracker_names):
@@ -169,8 +169,8 @@ class ExperimentOTB(object):
                 records[name] = np.loadtxt(record_file, delimiter=',')
             
             # loop overthe sequence and display results
-            img_files, nno = self.dataset[seq_name]
-            for f, img_ile in enumerate(img_files):
+            img_files, anno = self.dataset[seq_name]
+            for f, img_file in enumerate(img_files):
                 if not f % play_speed == 0:
                     continue
                 image = Image.open(img_file)

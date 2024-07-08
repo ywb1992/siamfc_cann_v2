@@ -130,7 +130,6 @@ def get_frame_difference(img1, img2):
     diff = np.abs(img1 - img2)
     return diff
 
-
 def get_cann_inputs(pre_img, img, response, sz, center, cann_len):
     '''
     Functions: 返回运动图, 混合图, 以及取整后的尺寸(均为 (271, 271))
@@ -225,8 +224,7 @@ def upsample(img_tensor, from_scale, to_scale):
     upsampled_imgs = torch.tensor(upsampled_imgs, device=device)
     return upsampled_imgs
 
-
-
+##### 已经不使用的函数 #####
 
 def get_cann_inputs_old(pre_img, img, response, sz, center, cann_len):
     '''

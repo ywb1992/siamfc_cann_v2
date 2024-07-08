@@ -38,7 +38,7 @@ class ExperimentGOT10k(object):
         self.nbins_iou = 101
         self.repetitions = 3
 
-    def run(self, tracker, visualize=False, video_save=False, is_record_delta=False):
+    def run(self, tracker, is_visualize=False, is_video_saving=False):
         if self.subset == 'test':
             print('\033[93m[WARNING]:\n' \
                   'The groundtruths of GOT-10k\'s test set is withholded.\n' \
@@ -79,9 +79,9 @@ class ExperimentGOT10k(object):
                 # tracking loop
                 boxes, times, imgs, ce_per_frame = tracker.track(
                     img_files, anno[0, :], anno, seq_name, 
-                    visualize=visualize,
-                    video_save=video_save,
-                    is_record_delta=is_record_delta)
+                    is_visualize=is_visualize,
+                    is_video_save=is_video_saving
+                )
                 
                 # record results
                 self._record(record_file, boxes, times)

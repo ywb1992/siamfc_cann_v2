@@ -21,7 +21,7 @@ device = torch.device('cuda:0' if cuda else 'cpu')
 
 
 def show_image(img, boxes=None, box_fmt='ltwh', colors=None,
-               thickness=3, fig_n=1, delay=1, visualize=True,
+               thickness=3, fig_n=1, delay=1, is_visualize=True,
                cvt_code=cv2.COLOR_RGB2BGR):
     '''
     Functions: 显示图片, 并在图片上绘制 bounding boxes
@@ -77,7 +77,7 @@ def show_image(img, boxes=None, box_fmt='ltwh', colors=None,
             pt2 = (box[0] + box[2], box[1] + box[3])
             img = cv2.rectangle(img, pt1, pt2, color.tolist(), thickness)
     
-    if visualize:
+    if is_visualize:
         winname = 'window_{}'.format(fig_n)
         cv2.imshow(winname, img)
         cv2.waitKey(delay)
@@ -85,7 +85,7 @@ def show_image(img, boxes=None, box_fmt='ltwh', colors=None,
     return img
 
 def show_response(response, pre_coor, gt_coor, colors=[(255, 255, 255), (255, 0, 0), (0, 255, 0)],
-                  fig_n=2, delay=1, visualize=True, scale_factor=3):
+                  fig_n=2, delay=1, is_visualize=True, scale_factor=3):
     '''
     Functions: 显示响应图, 并在图中标记出预测和真实位置
     '''
@@ -105,7 +105,7 @@ def show_response(response, pre_coor, gt_coor, colors=[(255, 255, 255), (255, 0,
     response = add_mark(response, pre_coor, colors[1])
     response = add_mark(response, gt_coor, colors[2])
     
-    if visualize:
+    if is_visualize:
         
         winname = 'window_{}'.format(fig_n)
         cv2.imshow(winname, response)
@@ -116,7 +116,7 @@ def show_response(response, pre_coor, gt_coor, colors=[(255, 255, 255), (255, 0,
         return response # , mmin.item(), mmax.item()
          
 def show_response_in_img(img, img_shape, response, response_shape, center, 
-                         fig_n=3, delay=1, visualize=True,
+                         fig_n=3, delay=1, is_visualize=True,
                          border_type=cv2.BORDER_CONSTANT,
                          border_value=(0, 0, 0)):
     '''
@@ -160,7 +160,7 @@ def show_response_in_img(img, img_shape, response, response_shape, center,
     # 最后转化回热度图并叠加！结束啦~
     response_in_img = cv2.applyColorMap(response_in_img, cv2.COLORMAP_JET)
     response_in_img = cv2.addWeighted(response_in_img, 0.4, img, 0.6, 0)
-    if visualize:
+    if is_visualize:
         if response_in_img.shape[0] > 1000 or response_in_img.shape[1] > 1000:
             response_in_img = cv2.resize(response_in_img, None, fx=0.5, fy=0.5)
         winname = 'window_{}'.format(fig_n)
