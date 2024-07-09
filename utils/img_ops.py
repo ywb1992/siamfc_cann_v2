@@ -29,7 +29,7 @@ def read_image(img_file, cvt_code=cv2.COLOR_BGR2RGB):
         img = cv2.cvtColor(img, cvt_code)
     return img
 
-def crop_and_resize(img, center, size, out_size,
+def crop_and_resize_for_small_image(img, center, size, out_size,
                               border_type=cv2.BORDER_CONSTANT,
                               border_value=(0, 0, 0),
                               interp=cv2.INTER_LINEAR):
@@ -68,6 +68,73 @@ def crop_and_resize(img, center, size, out_size,
     patch = cv2.resize(patch, (out_size, out_size), interpolation=interp)
 
     return patch
+
+def crop_and_resize(img, center, sz, out_size,
+                    border_type=cv2.BORDER_CONSTANT,
+                    border_value=(0, 0, 0),
+                    interp=cv2.INTER_LINEAR):
+    '''
+    Functions: 优化的图像裁剪并缩放功能。
+    先缩放，再裁剪，如果裁剪区域部分在图像外，则对裁剪后的图像进行填充。
+    '''
+    if sz < out_size:
+        return crop_and_resize_for_small_image(img, center, sz, out_size, border_type, border_value, interp)
+    
+    center, sz = np.round(center), num_ops.odd(sz)
+    ## 首先计算响应图映射回原图像后的边界：(ly, lx, ry, rx)
+    corners = np.asarray(
+                        [center[0] - (sz - 1) / 2,
+                         center[1] - (sz - 1) / 2,
+                         center[0] + (sz - 1) / 2 + 1,
+                         center[1] + (sz - 1) / 2 + 1], dtype=np.int32)  # shape = (4, )
+    
+    ## 获得左上角和右下角的坐标
+    h, w = img.shape[0], img.shape[1]
+    top_left = corners[:2]
+    bottom_right = corners[2:]
+    top_left_clamped = np.clip(top_left, 0, [h, w])
+    bottom_right_clamped = np.clip(bottom_right, 0, [h, w])
+    
+    ## 考虑填充量
+    padding = np.asarray([
+        top_left_clamped[0] - top_left[0],  # 上侧填充
+        top_left_clamped[1] - top_left[1],  # 左侧填充
+        bottom_right[0] - bottom_right_clamped[0],  # 下侧填充
+        bottom_right[1] - bottom_right_clamped[1]   # 右侧填充
+    ])
+    
+    ## 考虑需要将裁剪下来的图片缩放到什么尺寸
+    re_img_crop = 1. * (bottom_right_clamped - top_left_clamped) / sz * out_size
+    re_padding = 1. * padding / sz * out_size
+    
+    ### 对 re_img_crop 和 re_padding 进行取整操作，但保证取整之后和不变
+    re_img_crop_h = np.round(re_img_crop[0]).astype(np.int32)
+    re_padding_top = np.round(re_padding[0]).astype(np.int32)
+    if re_img_crop_h + re_padding_top > out_size:
+        re_padding_top -= 1
+    re_padding_bottom = out_size - re_img_crop_h - re_padding_top
+    
+    re_img_crop_w = np.round(re_img_crop[1]).astype(np.int32)
+    re_padding_left = np.round(re_padding[1]).astype(np.int32)
+    if re_img_crop_w + re_padding_left > out_size:
+        re_padding_left -= 1
+    re_padding_right = out_size - re_img_crop_w - re_padding_left
+    
+    re_img_crop_int = (re_img_crop_w, re_img_crop_h) # 注意，resize 接受的是 (w, h), ***
+    re_padding_int = (re_padding_top, re_padding_left, re_padding_bottom, re_padding_right)
+    
+    
+    ## 那么, 我们进行裁剪，而后放缩，再考虑填充
+    img_crop = img[top_left_clamped[0] : bottom_right_clamped[0],
+                   top_left_clamped[1] : bottom_right_clamped[1], :]
+    re_img_crop = cv2.resize(img_crop, re_img_crop_int, 
+                             interpolation=interp)
+
+    if np.any(re_padding_int):
+        re_img_crop = cv2.copyMakeBorder(re_img_crop, re_padding_int[0], re_padding_int[2], re_padding_int[1], re_padding_int[3],
+                                         border_type, value=border_value)
+    
+    return re_img_crop
 
 def img_to_tensor(img):
     '''
@@ -224,7 +291,12 @@ def upsample(img_tensor, from_scale, to_scale):
     upsampled_imgs = torch.tensor(upsampled_imgs, device=device)
     return upsampled_imgs
 
+
+
+
+###########################
 ##### 已经不使用的函数 #####
+###########################
 
 def get_cann_inputs_old(pre_img, img, response, sz, center, cann_len):
     '''

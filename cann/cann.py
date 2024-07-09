@@ -249,6 +249,7 @@ class CANN_Tracker(Tracker):
             self.cfg.scale_num // 2, self.cfg.scale_num) # 0.964, 1.000, 1.0375 
         # 惩罚因子, 针对放大和缩小了的尺度
         self.scale_penalty = [self.cfg.scale_penalty, 1.0, self.cfg.scale_penalty]
+        self.scale_penalty = torch.tensor(self.scale_penalty, device=device)
         
         # 汉明余弦窗, 用于中心抑制
         self.hann_window = np.outer(
@@ -469,7 +470,7 @@ class CANN_Tracker(Tracker):
         )
         responses = self.get_resized_response(self.kernel, instance) # 获取 (3, 1, 272, 272) 的响应图
         responses = responses.squeeze() # 压缩维度, (3, 272, 272)
-        responses = responses * torch.tensor(self.scale_penalty, device=device).unsqueeze(-1).unsqueeze(-1) # 施加尺度的惩罚因子
+        responses = responses * self.scale_penalty.unsqueeze(-1).unsqueeze(-1) # 施加尺度的惩罚因子
 
         _t1 = time.time()
         # 第二步, 根据 siamfc 的操作, 找到最匹配的尺度(响应值最大的尺度)
@@ -610,7 +611,7 @@ class CANN_Tracker(Tracker):
          
         responses = self.get_resized_response(self.kernel, x)
         responses = responses.squeeze() # (3, 271, 271)
-        responses = responses * torch.tensor(self.scale_penalty, device=device).unsqueeze(-1).unsqueeze(-1)
+        responses = responses * self.scale_penalty.unsqueeze(-1).unsqueeze(-1)
 
 
 

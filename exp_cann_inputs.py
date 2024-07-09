@@ -14,6 +14,22 @@ from utils import img_ops, num_ops
 
 print(np.inf)
 
+def get_frame_difference_torch(img1, img2):
+    '''
+    Functions: 接受灰度图, 并计算差分
+    '''
+
+    img1_min, img1_max = torch.min(img1), torch.max(img1)
+    img2_min, img2_max = torch.min(img2), torch.max(img2)
+    
+    if img1_min >= 0 and img1_max <= 1 and img2_min >= 0 and img2_max <= 1:
+        pass
+    else:
+        img1, img2 = img1 / 255.0, img2 / 255.0
+        
+    diff = np.abs(img1 - img2)
+    return diff
+
 def ori_get_dif(pre_img, img, sz, center, cann_len):
     center, sz = np.round(center), num_ops.odd(sz) # 进行取整操作; odd 是保证为奇数
     
