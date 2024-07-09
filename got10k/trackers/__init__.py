@@ -51,7 +51,7 @@ class Tracker(object):
                 'factor0': 1.5559, # mu 系数
                 'factor1': 0.3018, # mot 系数 
                 'factor2': 0.7096, # mix 系数
-                'mix_factor': 0.88, # 混合 U 与 res 的系数
+                'mix_factor': 0.9246153846153846, # 混合 U 与 res 的系数
             # inference parameters
             'scale_num': 3,
             'scale_step': 1.0375,

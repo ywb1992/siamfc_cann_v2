@@ -88,6 +88,7 @@ def show_response(response, pre_coor, gt_coor, colors=[(255, 255, 255), (255, 0,
                   fig_n=2, delay=1, is_visualize=True, scale_factor=3):
     '''
     Functions: 显示响应图, 并在图中标记出预测和真实位置
+    Processing Mode: numpy
     '''
     response = cv2.resize(response, (response.shape[1] * scale_factor, response.shape[0] * scale_factor))
     ori_response = response
@@ -121,6 +122,7 @@ def show_response_in_img(img, img_shape, response, response_shape, center,
                          border_value=(0, 0, 0)):
     '''
     Functions: 将响应图映射回原图, 并叠加在原图上
+    Processing Mode: numpy
     '''
     # center: (x, y)
     center = np.array([center[1], center[0]])  # (x, y) -> (y, x)
@@ -170,6 +172,11 @@ def show_response_in_img(img, img_shape, response, response_shape, center,
 
 def add_mark(image, mark_coords, mark_color, 
              x_size=3, circle_radius=6, circle_color=(173, 216, 230), circle_thickness=-1):
+    '''
+    Functions: 在图片上标识一个点
+    
+    Processing Mode: numpy
+    '''
     # 指定要标记的坐标
     x, y = mark_coords
 
@@ -190,19 +197,24 @@ def add_mark(image, mark_coords, mark_color,
 def add_arrow(image, start_point, end_point, 
               arrow_color=(0, 0, 255), border_color=(255, 255, 255), border_thickness=1, arrow_thickness=2):
     '''
-    在图像上绘制带有边框的箭头。
+    Processing Mode:
+        - numpy
+        
+    Functions:
+        - 在图像上绘制带有边框的箭头。
     
-    参数:
-    - image: 要绘制箭头的图像
-    - start_point: 箭头的起点坐标 (x, y)
-    - end_point: 箭头的终点坐标 (x, y)
-    - arrow_color: 箭头的颜色 (B, G, R)
-    - border_color: 箭头边框的颜色 (B, G, R)
-    - border_thickness: 箭头边框的厚度
-    - arrow_thickness: 箭头的厚度
+    Parameters:
+        - image: 要绘制箭头的图像
+        - start_point: 箭头的起点坐标 (x, y)
+        - end_point: 箭头的终点坐标 (x, y)
+        - arrow_color: 箭头的颜色 (B, G, R)
+        - border_color: 箭头边框的颜色 (B, G, R)
+        - border_thickness: 箭头边框的厚度
+        - arrow_thickness: 箭头的厚度
     
-    返回值:
-    - 带有绘制箭头的图像
+    Returns:
+        - 带有绘制箭头的图像
+    
     '''
     # 先绘制边框
     cv2.arrowedLine(image, start_point, end_point, border_color, arrow_thickness + border_thickness, tipLength=0.3)

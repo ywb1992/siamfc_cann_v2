@@ -4,6 +4,8 @@ import time
 
 import cv2
 import numpy as np
+import torch
+import torch.nn.functional as F
 
 project_dir = 'd:/MyFolders/project/CANN/SiamFC_CANN_v2'
 sys.path.append(os.path.join(project_dir, 'siamfc_cann_v2/utils'))
@@ -128,6 +130,70 @@ def opt_get_dif(pre_img, img, sz, center, cann_len):
     movement = cv2.blur(dif, (19, 19))
     
     return movement 
+
+def torch_get_dif(pre_img, img, sz, center, cann_len, device='cuda'):
+    '''
+        pre_img, img: (1, 1, h, w)
+    '''
+    center = torch.round(center).to(device)
+    sz = num_ops.odd(sz)
+    
+    response_corners = torch.tensor(
+        [
+            center[0] - (sz - 1) / 2,
+            center[1] - (sz - 1) / 2,
+            center[0] + (sz - 1) / 2 + 1,
+            center[1] + (sz - 1) / 2 + 1
+        ], dtype=torch.int32, device=device
+    )
+
+    h, w = img.shape[-2], img.shape[-1]
+    top_left = response_corners[:2]
+    bottom_right = response_corners[2:]
+    top_left_clamped = torch.clamp(top_left, 0, torch.tensor([h, w], device=device))
+    bottom_right_clamped = torch.clamp(bottom_right, 0, torch.tensor([h, w], device=device))
+
+    padding = torch.tensor([
+        top_left_clamped[0] - top_left[0],
+        top_left_clamped[1] - top_left[1],
+        bottom_right[0] - bottom_right_clamped[0],
+        bottom_right[1] - bottom_right_clamped[1]
+    ], device=device)
+
+    re_img_crop = (bottom_right_clamped - top_left_clamped).float() / sz * cann_len
+    re_padding = padding.float() / sz * cann_len
+
+    re_img_crop_h = torch.round(re_img_crop[0]).int()
+    re_padding_top = torch.round(re_padding[0]).int()
+    if re_img_crop_h + re_padding_top > cann_len:
+        re_padding_top -= 1
+    re_padding_bottom = cann_len - re_img_crop_h - re_padding_top
+
+    re_img_crop_w = torch.round(re_img_crop[1]).int()
+    re_padding_left = torch.round(re_padding[1]).int()
+    if re_img_crop_w + re_padding_left > cann_len:
+        re_padding_left -= 1
+    re_padding_right = cann_len - re_img_crop_w - re_padding_left
+
+    re_img_crop_int = (re_img_crop_w, re_img_crop_h)
+    re_padding_int = (re_padding_top, re_padding_left, re_padding_bottom, re_padding_right)
+
+    img_crop = img[top_left_clamped[0]:bottom_right_clamped[0], top_left_clamped[1]:bottom_right_clamped[1]].to(device)
+    pre_img_crop = pre_img[top_left_clamped[0]:bottom_right_clamped[0], top_left_clamped[1]:bottom_right_clamped[1]].to(device)
+
+    re_img_crop = F.interpolate(img_crop.unsqueeze(0).unsqueeze(0), size=re_img_crop_int, mode='bilinear', align_corners=True).squeeze()
+    re_pre_img_crop = F.interpolate(pre_img_crop.unsqueeze(0).unsqueeze(0), size=re_img_crop_int, mode='bilinear', align_corners=True).squeeze()
+
+    dif = get_frame_difference(re_img_crop, re_pre_img_crop)
+
+    if torch.any(torch.tensor(re_padding_int, device=device)):
+        dif = F.pad(dif, (re_padding_int[1], re_padding_int[3], re_padding_int[0], re_padding_int[2]), mode='constant', value=0)
+
+    assert dif.shape[0] == dif.shape[1] == cann_len, f'({dif.shape[0]}, {dif.shape[1]}), {cann_len}'
+
+    movement = F.avg_pool2d(dif.unsqueeze(0).unsqueeze(0), kernel_size=19, stride=1, padding=9).squeeze()
+
+    return movement
 
 
 pre_img = cv2.imread('D:\MyFolders\project\CANN\SiamFC_CANN_v2\data\\train\GOT10K\\train\GOT-10k_Train_000014\\00000001.jpg')

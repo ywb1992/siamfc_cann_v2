@@ -31,6 +31,12 @@ from .cann_datasets import CANN_Pair
 from .cann_losses import *
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+_t0, _t1, _t2, _t3, _t4, _t5, _t6, _t7, _t8 = 0, 0, 0, 0, 0, 0, 0, 0, 0
+tl1, tl2, tl3, tl4, tl5, tl6, tl7, tl8 = 0, 0, 0, 0, 0, 0, 0, 0
+
+
+
 class CANN_Network(nn.Module):
     '''
     Functions: 定义 CANN
@@ -404,7 +410,19 @@ class CANN_Tracker(Tracker):
                 if IoU.item() < self.cfg.IoU_thresold:
                     stop_recording = True
         
-            
+    
+        global tl1, tl2, tl3, tl4, tl5, tl6, tl7, tl8
+        print("t1: {}, t2: {}, t3: {}, t4: {}, t5: {}, t6: {}, t7: {}, t8: {}".format(
+            tl1 / (len(img_files) - 1),
+            tl2 / (len(img_files) - 1),
+            tl3 / (len(img_files) - 1),
+            tl4 / (len(img_files) - 1),
+            tl5 / (len(img_files) - 1),
+            tl6 / (len(img_files) - 1),
+            tl7 / (len(img_files) - 1),
+            tl8 / (len(img_files) - 1)
+        ))
+
                 
         # 追踪完整个序列后, 和 siamfc 的追踪效果进行比较, 并进行反向传播(但尚不更新梯度)
         if is_train:
@@ -439,6 +457,11 @@ class CANN_Tracker(Tracker):
         '''
         Functions: 进行当前帧标注框的预测
         '''
+        
+        global _t0, _t1, _t2, _t3, _t4, _t5, _t6, _t7, _t8
+        global tl1, tl2, tl3, tl4, tl5, tl6, tl7, tl8
+        
+        _t0 = time.time()
         # 第一步：获得 responses
         instance = img_ops.get_instance(
             img, self.cfg.instance_sz, self.center.cpu().detach().numpy(), 
@@ -448,7 +471,7 @@ class CANN_Tracker(Tracker):
         responses = responses.squeeze() # 压缩维度, (3, 272, 272)
         responses = responses * torch.tensor(self.scale_penalty, device=device).unsqueeze(-1).unsqueeze(-1) # 施加尺度的惩罚因子
 
-
+        _t1 = time.time()
         # 第二步, 根据 siamfc 的操作, 找到最匹配的尺度(响应值最大的尺度)
         max_index = torch.argmax(torch.max(responses.reshape(self.cfg.scale_num, -1), dim=1).values)
         response = responses[max_index] # 取出对应响应图
@@ -456,7 +479,7 @@ class CANN_Tracker(Tracker):
                         * (self.x_sz * self.scale_factors[max_index]) / self.cfg.instance_sz # 获得响应图在原图中的对应尺寸
         
 
-        
+        _t2 = time.time()
         # 第三步：获得 cann 的 inputs
         movement, mixed = img_ops.get_cann_inputs(
             pre_img_gray, img_gray,
@@ -464,7 +487,7 @@ class CANN_Tracker(Tracker):
             self.center.cpu().detach().numpy(), self.cfg.len
         )
         
-        
+        _t3 = time.time()
         # 第四步：送入 CANN 进行处理
         movement_tensor = torch.from_numpy(movement).to(device).unsqueeze(0)
         response_tensor = response.unsqueeze(0)
@@ -489,7 +512,7 @@ class CANN_Tracker(Tracker):
         
         self.last_input = inputs_tensor
         
-
+        _t4 = time.time()
         # 第五步, 获得经过 hamming window 处理过的 distribution 归一化的 response
         response = response - torch.min(response)
         response = response / torch.sum(response) + 1e-16
@@ -501,7 +524,7 @@ class CANN_Tracker(Tracker):
         cann_u = cann_u / torch.max(cann_u)
         modified_response = self.net.mix_factor * response + (1. - self.net.mix_factor) * cann_u # 混合
         
-        
+        _t5 = time.time()
         # 第六步, 获得响应图中的最大值(软最大值)处
         if is_train == False:
             max_indice = torch.argmax(modified_response.reshape(-1))
@@ -514,7 +537,7 @@ class CANN_Tracker(Tracker):
         c_max_position = torch.stack((c_max_indice // cann_u.shape[1], c_max_indice % cann_u.shape[1]))
         cann_center = c_max_position
         
-            
+        _t6 = time.time()
         # 第七步，获取对中心的预测
         disp_in_res = max_position4mix - self.constant_center
         disp_in_img = disp_in_res / self.cfg.len * sz_in_img
@@ -544,20 +567,30 @@ class CANN_Tracker(Tracker):
             self.target_sz[0]
         ])
         
-        
+        _t7 = time.time()
         # 第十步：可视化与视频保存
         vis_ens = None # 可视化图片的整体
         if is_visualize:
-            vis_res = visualization.show_response(response.squeeze().cpu().detach().numpy(), 
-                                        max_position4mix.cpu().detach().numpy(),
-                                        gt_center, 
-                                        is_visualize=True)
-            vis_img = visualization.show_image(img, [box, anno], 
-                                     is_visualize=True)
+            # vis_res = visualization.show_response(response.squeeze().cpu().detach().numpy(), 
+            #                             max_position4mix.cpu().detach().numpy(),
+            #                             gt_center, 
+            #                             is_visualize=True)
+            # vis_img = visualization.show_image(img, [box, anno], 
+            #                          is_visualize=True)
         
             if is_video_saving:
                 vis_ens = None
-            
+        _t8 = time.time()
+        
+        tl1 += _t1 - _t0
+        tl2 += _t2 - _t1
+        tl3 += _t3 - _t2
+        tl4 += _t4 - _t3
+        tl5 += _t5 - _t4
+        tl6 += _t6 - _t5
+        tl7 += _t7 - _t6
+        tl8 += _t8 - _t7
+        
         return box, sz_in_img, gt_dist_in_img, gt_dist_in_res, vis_ens
           
     @torch.no_grad()    
