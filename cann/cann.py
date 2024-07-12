@@ -572,12 +572,12 @@ class CANN_Tracker(Tracker):
         # 第十步：可视化与视频保存
         vis_ens = None # 可视化图片的整体
         if is_visualize:
-            # vis_res = visualization.show_response(response.squeeze().cpu().detach().numpy(), 
-            #                             max_position4mix.cpu().detach().numpy(),
-            #                             gt_center, 
-            #                             is_visualize=True)
-            # vis_img = visualization.show_image(img, [box, anno], 
-            #                          is_visualize=True)
+            vis_res = visualization.show_response(response.squeeze().cpu().detach().numpy(), 
+                                        max_position4mix.cpu().detach().numpy(),
+                                        gt_center, 
+                                        is_visualize=True)
+            vis_img = visualization.show_image(img, [box, anno], 
+                                     is_visualize=True)
         
             if is_video_saving:
                 vis_ens = None
