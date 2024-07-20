@@ -81,18 +81,30 @@ def img_to_tensor(img):
         raise ValueError('The shape of img is not correct!', img.shape)
     return img.to(device)
 
-def get_center_sz(box):
+def get_center_sz(box, mode_transform=False):
     '''
-    Functions: 获取 ltwh 标注格式的 box 或者 boxes 的中心位置
-    '''
+    Functions: 获取 box 或者 boxes 的中心位置与尺寸。如果在 (wh, hw) 之间转化，则 mode_transform=True
+    ''' 
     if box.ndim == 1:
-        box = np.array([
-                box[0] - 1 + (box[2] - 1) / 2,
+        if mode_transform is True:
+            box = np.array([
                 box[1] - 1 + (box[3] - 1) / 2,
-                box[2], box[3]], dtype=np.float32)
+                box[0] - 1 + (box[2] - 1) / 2,
+                box[3], box[2]], dtype=np.float32)
+        else:
+            box = np.array([
+                    box[0] - 1 + (box[2] - 1) / 2,
+                    box[1] - 1 + (box[3] - 1) / 2,
+                    box[2], box[3]], dtype=np.float32)
         return box[:2], box[2:]
     elif box.ndim == 2:
-        box = np.array([
+        if mode_transform is True:
+            box = np.array([
+                box[:, 1] - 1 + (box[:, 3] - 1) / 2,
+                box[:, 0] - 1 + (box[:, 2] - 1) / 2,
+                box[:, 3], box[:, 2]], dtype=np.float32)
+        else:
+            box = np.array([
                 box[:, 0] - 1 + (box[:, 2] - 1) / 2,
                 box[:, 1] - 1 + (box[:, 3] - 1) / 2,
                 box[:, 2], box[:, 3]], dtype=np.float32)

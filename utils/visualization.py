@@ -20,7 +20,7 @@ cuda = torch.cuda.is_available()
 device = torch.device('cuda:0' if cuda else 'cpu')
 
 
-def show_image(img, boxes=None, box_fmt='ltwh', colors=None,
+def show_image(img, boxes_wh=None, box_fmt='ltwh', colors=None,
                thickness=3, fig_n=1, delay=1, is_visualize=True,
                cvt_code=cv2.COLOR_RGB2BGR):
     '''
@@ -37,21 +37,21 @@ def show_image(img, boxes=None, box_fmt='ltwh', colors=None,
             int(img.shape[1] * scale),
             int(img.shape[0] * scale))
         img = cv2.resize(img, out_size)
-        if boxes is not None:
-            boxes = np.array(boxes, dtype=np.float32) * scale
+        if boxes_wh is not None:
+            boxes_wh = np.array(boxes_wh, dtype=np.float32) * scale
     
-    if boxes is not None:
+    if boxes_wh is not None:
         assert box_fmt in ['ltwh', 'ltrb']
-        boxes = np.array(boxes, dtype=np.int32)
-        if boxes.ndim == 1:
-            boxes = np.expand_dims(boxes, axis=0)
+        boxes_wh = np.array(boxes_wh, dtype=np.int32)
+        if boxes_wh.ndim == 1:
+            boxes_wh = np.expand_dims(boxes_wh, axis=0)
         if box_fmt == 'ltrb':
-            boxes[:, 2:] -= boxes[:, :2]
+            boxes_wh[:, 2:] -= boxes_wh[:, :2]
         
         # clip bounding boxes
         bound = np.array(img.shape[1::-1])[None, :]
-        boxes[:, :2] = np.clip(boxes[:, :2], 0, bound)
-        boxes[:, 2:] = np.clip(boxes[:, 2:], 0, bound - boxes[:, :2])
+        boxes_wh[:, :2] = np.clip(boxes_wh[:, :2], 0, bound)
+        boxes_wh[:, 2:] = np.clip(boxes_wh[:, 2:], 0, bound - boxes_wh[:, :2])
         
         if colors is None:
             colors = [
@@ -71,7 +71,7 @@ def show_image(img, boxes=None, box_fmt='ltwh', colors=None,
         if colors.ndim == 1:
             colors = np.expand_dims(colors, axis=0)
         
-        for i, box in enumerate(boxes):
+        for i, box in enumerate(boxes_wh):
             color = colors[i % len(colors)]
             pt1 = (box[0], box[1])
             pt2 = (box[0] + box[2], box[1] + box[3])
@@ -84,60 +84,122 @@ def show_image(img, boxes=None, box_fmt='ltwh', colors=None,
 
     return img
 
-def show_response(response, pre_coor, gt_coor, colors=[(255, 255, 255), (255, 0, 0), (0, 255, 0)],
-                  fig_n=2, delay=1, is_visualize=True, scale_factor=3):
+def show_response(response, 
+                  fig_n=2, delay=1, scale_factor=3, 
+                  peaks_wh=None, peaks_colors=None,
+                  is_visualize=True, is_return_value=False):
     '''
-    Functions: 显示响应图, 并在图中标记出预测和真实位置
+    Functions: 显示响应图
     Processing Mode: numpy
     '''
+    # 处理响应图
     response = cv2.resize(response, (response.shape[1] * scale_factor, response.shape[0] * scale_factor))
     ori_response = response
     response = (response - np.min(response)) / (np.max(response) - np.min(response))
     response = (response * 255).astype(np.uint8)
     response = cv2.applyColorMap(response, cv2.COLORMAP_JET)
     
-    center_coor = np.array([response.shape[1] // 2,
-                            response.shape[0] // 2])
-    pre_coor = np.round(pre_coor * scale_factor).astype(np.int32)
-    gt_coor = np.round(gt_coor * scale_factor).astype(np.int32)
-    
-    response = add_arrow(response, center_coor, pre_coor)
-    response = add_mark(response, center_coor, colors[0])
-    response = add_mark(response, pre_coor, colors[1])
-    response = add_mark(response, gt_coor, colors[2])
+    # 获取返回的数值
+    mmin = np.min(ori_response)
+    mmax = np.max(ori_response)
     
     if is_visualize:
-        
         winname = 'window_{}'.format(fig_n)
         cv2.imshow(winname, response)
         cv2.waitKey(delay)
-        mmin = np.min(ori_response) * 1000
-        mmax = np.max(ori_response) * 1000
-            
-        return response # , mmin.item(), mmax.item()
-         
-def show_response_in_img(img, img_shape, response, response_shape, center, 
-                         fig_n=3, delay=1, is_visualize=True,
-                         border_type=cv2.BORDER_CONSTANT,
-                         border_value=(0, 0, 0)):
+
+    if is_return_value:
+        return response, mmin, mmax
+    else:
+        return response
+def show_response_with_mark(response, pre_coor_wh, gt_coor_wh, colors=[(255, 255, 255), (255, 0, 0), (0, 255, 0)],
+                  fig_n=2, delay=1, scale_factor=3, 
+                  peaks_wh=None, peaks_colors=None,
+                  is_visualize=True, is_return_value=False):
     '''
-    Functions: 将响应图映射回原图, 并叠加在原图上
+    Functions: 显示响应图, 并在图中标记出预测和真实位置
     Processing Mode: numpy
     '''
-    # center: (x, y)
-    center = np.array([center[1], center[0]])  # (x, y) -> (y, x)
-    response_shape = np.round(response_shape).astype(int)
-    # 最大最小值归一化，并缩放
+    # 处理响应图
+    response = cv2.resize(response, (response.shape[1] * scale_factor, response.shape[0] * scale_factor))
+    ori_response = response
     response = (response - np.min(response)) / (np.max(response) - np.min(response))
     response = (response * 255).astype(np.uint8)
+    response = cv2.applyColorMap(response, cv2.COLORMAP_JET)
+    
+    # 获取返回的数值
+    mmin = np.min(ori_response)
+    mmax = np.max(ori_response)
+
+    # 获得要绘制的三个坐标
+    center_coor_wh = np.round(np.array(response.shape[:2]) // 2).astype(np.int32) # 这是因为 response 是 (x, x) 的
+    pre_coor_wh = np.round(pre_coor_wh * scale_factor).astype(np.int32)
+    gt_coor_wh = np.round(gt_coor_wh * scale_factor).astype(np.int32)
+    
+    response = add_arrow(response, center_coor_wh, pre_coor_wh)
+    response = add_mark(response, center_coor_wh, colors[0])
+    response = add_mark(response, pre_coor_wh, colors[1])
+    response = add_mark(response, gt_coor_wh, colors[2])
+    
+    # 人工寻找的最值处
+    if peaks_wh is not None:
+        if peaks_colors is None:
+            peaks_colors = plt.cm.Blues(np.linspace(0.1, 0.9, 5))
+            peaks_colors = peaks_colors[::-1]
+            peaks_colors = [(int(color[2] * 255), int(color[1] * 255), int(color[0] * 255)) 
+                            for color in peaks_colors]
+            peaks_colors = peaks_colors[:len(peaks_colors)]
+            
+        for i, peak_wh in enumerate(peaks_wh):
+            peak_wh = np.round(peak_wh * scale_factor).astype(np.int32)
+            response = add_mark(response, peak_wh, peaks_colors[i],
+                                x_size=1, circle_radius=4, circle_color=(0, 0, 0))
+    
+    if is_visualize:
+        winname = 'window_{}'.format(fig_n)
+        cv2.imshow(winname, response)
+        cv2.waitKey(delay)
+
+    if is_return_value:
+        return response, mmin, mmax
+    else:
+        return response
+         
+def show_response_in_img(img, img_shape, response, response_shape, center_wh, alpha=0.4,
+                         fig_n=3, delay=1,
+                         border_type=cv2.BORDER_CONSTANT,
+                         border_value=(0, 0, 0),
+                         cvt_code=cv2.COLOR_RGB2BGR,
+                         is_colored=False, is_visualize=True):
+    '''
+    Functions: 将响应图映射回原图, 并叠加在原图上; 如有必要, 将会添加上标识
+    Processing Mode: numpy
+    '''
+    # 如果要转化颜色
+    if cvt_code is not None:
+        img = cv2.cvtColor(img, cvt_code)
+    
+    # center: hw
+    center = np.array([center_wh[1], center_wh[0]])  # (x, y) -> (y, x)
+    response_shape = np.round(response_shape).astype(int)
+    
+    if is_colored is False:
+    # 最大最小值归一化
+        response = (response - np.min(response)) / (np.max(response) - np.min(response))
+        response = (response * 255).astype(np.uint8)
+        response = cv2.applyColorMap(response, cv2.COLORMAP_JET)
+    
+    # 更改尺寸  
     response = cv2.resize(response, tuple(response_shape), interpolation=cv2.INTER_CUBIC)
-    response_in_img = np.zeros(img_shape[:2], dtype=np.uint8)
+    
+    # 如果不覆盖就叠加
+    response_in_img = img
     
     # 这里需要考虑超出边界的情况，根据原文，要进行填充呢
     ## 首先计算响应图映射回原图像后的边界：(ly, lx, ry, rx)
     ### 这里使用 np.floor 是因为 ... center 不一定是整数 ... 
-    response_corners = np.asarray(
-                        [np.floor(center[0] - (response_shape[0] - 1) / 2),
+    response_corners = np.asarray([
+                        np.floor(center[0] - (response_shape[0] - 1) / 2),
                         np.floor(center[1] - (response_shape[1] - 1) / 2),
                         np.floor(center[0] + (response_shape[0] - 1) / 2 + 1),
                         np.floor(center[1] + (response_shape[1] - 1) / 2 + 1)])
@@ -152,33 +214,38 @@ def show_response_in_img(img, img_shape, response, response_shape, center,
     ## 由于填充，img 的 (0, 0) 已经变成了 img' 中的 (npad, npad)，所以要把矩形框 corners 平移 npad
     ## 获取新的 response 图在 img' 的位置
     response_corners = (response_corners + npad).astype(int)
-    ## 填充到 response_in_img 中，注意 response_corners 是 (ly, lx, ry, rx)
-    response_in_img[response_corners[0]:response_corners[2], response_corners[1]:response_corners[3]] = response
-    response_in_img = response_in_img.astype(np.uint8)
+    ## 进行透明度的叠加
+    img_crop = response_in_img[response_corners[0] : response_corners[2],
+                               response_corners[1] : response_corners[3],
+                              :]
+    response = cv2.addWeighted(response, alpha, img_crop, 1 - alpha, 0)
+    response_in_img[response_corners[0] : response_corners[2], 
+                    response_corners[1] : response_corners[3],
+                   :] = response
     
     # 再把 response_in_img 裁剪回原图的尺寸
-    response_in_img = response_in_img[npad:npad + img_shape[0], npad:npad + img_shape[1]]
+    response_in_img = response_in_img[npad : npad + img_shape[0], 
+                                      npad : npad + img_shape[1],
+                                      :]
     
-    # 最后转化回热度图并叠加！结束啦~
-    response_in_img = cv2.applyColorMap(response_in_img, cv2.COLORMAP_JET)
-    response_in_img = cv2.addWeighted(response_in_img, 0.4, img, 0.6, 0)
     if is_visualize:
         if response_in_img.shape[0] > 1000 or response_in_img.shape[1] > 1000:
             response_in_img = cv2.resize(response_in_img, None, fx=0.5, fy=0.5)
         winname = 'window_{}'.format(fig_n)
         cv2.imshow(winname, response_in_img)
         cv2.waitKey(delay)
-        return response_in_img
+    return response_in_img
 
-def add_mark(image, mark_coords, mark_color, 
-             x_size=3, circle_radius=6, circle_color=(173, 216, 230), circle_thickness=-1):
+def add_mark(image, mark_coords_wh, mark_color, 
+             x_size=3, circle_radius=6, circle_color=(173, 216, 230), circle_thickness=-1,
+             mode='hw'):
     '''
     Functions: 在图片上标识一个点
     
-    Processing Mode: numpy
+    Processing Mode: numpy, (w, h)
     '''
     # 指定要标记的坐标
-    x, y = mark_coords
+    x, y = mark_coords_wh
 
     # 画圆形背景
     cv2.circle(image, (x, y), circle_radius, circle_color, circle_thickness)
@@ -194,11 +261,11 @@ def add_mark(image, mark_coords, mark_color,
 
     return image
 
-def add_arrow(image, start_point, end_point, 
+def add_arrow(image, start_point_wh, end_point_wh, 
               arrow_color=(0, 0, 255), border_color=(255, 255, 255), border_thickness=1, arrow_thickness=2):
     '''
     Processing Mode:
-        - numpy
+        - numpy, (w, h)
         
     Functions:
         - 在图像上绘制带有边框的箭头。
@@ -216,11 +283,38 @@ def add_arrow(image, start_point, end_point,
         - 带有绘制箭头的图像
     
     '''
+    
     # 先绘制边框
-    cv2.arrowedLine(image, start_point, end_point, border_color, arrow_thickness + border_thickness, tipLength=0.3)
+    cv2.arrowedLine(image, start_point_wh, end_point_wh, border_color, arrow_thickness + border_thickness, tipLength=0.3)
     # 再绘制箭头主体
-    cv2.arrowedLine(image, start_point, end_point, arrow_color, arrow_thickness, tipLength=0.3)
+    cv2.arrowedLine(image, start_point_wh, end_point_wh, arrow_color, arrow_thickness, tipLength=0.3)
     return image
 
+def add_minmax_to_image(img, mmin, mmax):
+    # 在右上角添加 mmax
+    img = add_text_with_background(img, f"mmax: {mmax:.3f}", (img.shape[1] // 2, 25))
+    # 在右下角添加 mmin
+    img = add_text_with_background(img, f"mmin: {mmin:.3f}",(img.shape[1] // 2, img.shape[0] - 15))
+                                            
+    return img
        
-   
+def add_text_with_background(img, text, position_wh, 
+                             font=cv2.FONT_HERSHEY_SIMPLEX, font_scale=1, font_color=(0, 255, 255), line_type=2):
+    background_color = (0, 0, 0)
+    alpha = 0.8
+    
+    # 获取文字的宽度和高度
+    text_size = cv2.getTextSize(text, font, font_scale, line_type)[0]
+    
+    # 计算背景矩形的坐标
+    left_top_wh = (position_wh[0], position_wh[1] - text_size[1] - 10)
+    right_bottom_wh = (position_wh[0] + text_size[0] + 10, position_wh[1] + 10)
+    
+    # 绘制带有透明度的背景矩形
+    overlay = img.copy()
+    cv2.rectangle(overlay, left_top_wh, right_bottom_wh, background_color, -1)
+    cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+    
+    # 在背景上添加文字
+    cv2.putText(img, text, (position_wh[0], position_wh[1]), font, font_scale, font_color, line_type)
+    return img

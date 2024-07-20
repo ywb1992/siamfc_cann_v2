@@ -4,7 +4,7 @@ import subprocess
 import cv2
 import numpy as np
 import torch
-from torchvision.ops import box_iou
+from . import gen_ops, img_ops, num_ops, visualization
 
 
 class FailureSave:
@@ -199,16 +199,20 @@ class ComparisonSave:
         self.imgs2 = [] 
         self.ress1 = []
         self.ress2 = []
+        self.ress2_mmin = []
+        self.ress2_mmax = []
         self.seq_name = seq_name
     
-    def append(self, img12, img1, img2, res1, res2):
+    def append(self, img12, img1, img2, res1, res2, res2_mmin, res2_mmax):
         self.imgs12.append(img12)
         self.imgs1.append(img1)
         self.imgs2.append(img2)
         self.ress1.append(res1)
         self.ress2.append(res2)
+        self.ress2_mmin.append(res2_mmin)
+        self.ress2_mmax.append(res2_mmax)
     
-    def save(self):
+    def save(self, is_visualize=False):
         '''
             Parameters:
                 self.imgs12: 融合了 1 算法和 2 算法得到的标注框的图片; shape=(h, w, 3)
@@ -216,10 +220,13 @@ class ComparisonSave:
                 self.imgs2: 仅使用 2 算法得到的标注框的图片, 但融合了响应图; shape=(h, w, 3)
                 self.ress1: 算法 1 的响应图; shape=(k, k, 3)
                 self.ress2: 算法 2 的响应图; shape=(k, k, 3)
+                self.ress2_mmin, self.ress2_mmax: 算法 2 的响应图的 mmin 和 mmax; shape=(k, k, 3)
             Functions:
                 将图片进行融合, 并保存为视频。具体地说，我们会把 imgs12 放大成 (2h, 2w, 3) 的图片，
                 然后在其右侧添加 imgs1 和 imgs2, 然后继续在其右侧添加缩放为 (n, n)  
                 最后整张图片的大小: (2h, 2w + w + h, 3)
+            Default:
+                一般而言, 算法 1 为 SiamFC, 算法 2 为对比算法(SiamFC+CANN)
         '''
         # 定义保存路径
         video_dir = os.path.join(self.save_dir, self.seq_name + ".mp4")
@@ -232,11 +239,13 @@ class ComparisonSave:
         
         # 获取视频
         mixed_imgs = []
-        for img12, img1, img2, res1, res2 in zip(self.imgs12, self.imgs1, self.imgs2,
-                                                 self.ress1, self.ress2):
+        for img12, img1, img2, res1, res2, res2_mmin, res2_mmax in zip(self.imgs12, self.imgs1, self.imgs2,
+                                                                       self.ress1, self.ress2, 
+                                                                       self.ress2_mmin, self.ress2_mmax):
             # 缩放响应图
-            ress1_resized = cv2.resize(res1, (h, h)) # (h, h, 3)
-            ress2_resized = cv2.resize(res2, (h, h))
+            res1_resized = cv2.resize(res1, (h, h)) # (h, h, 3)
+            res2_resized = cv2.resize(res2, (h, h))
+            res2_resized_texted = visualization.add_minmax_to_image(res2_resized, res2_mmin, res2_mmax)
             
             # 放大 img12 到 (2n, 2m)
             img12_resized = cv2.resize(img12, (2 * w, 2 * h)) # (2h, 2w, 3)
@@ -245,13 +254,17 @@ class ComparisonSave:
             img_combined = np.vstack((img1, img2)) # (2h, w, 3)
             
             # 拼接响应图
-            res_combined = np.vstack((ress1_resized, ress2_resized)) # (2h, h, 3)
+            res_combined = np.vstack((res1_resized, res2_resized_texted)) # (2h, h, 3)
             
             # 最终组合
             combined_img = np.hstack((img12_resized, img_combined)) # (2h, 2w + w, 3)
             combined_img = np.hstack((combined_img, res_combined)) # (2h, 2w + w + h, 3)
             mixed_imgs.append(combined_img)
-        
+
+            # 是否要在线可视化
+            if is_visualize:
+                cv2.imshow("mixed_imgs", combined_img)
+                cv2.waitKey(0)
         
         # video saving
         if not os.path.exists(video_dir):

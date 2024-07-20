@@ -1,3 +1,4 @@
+pre: 0.808
 {
     # siamfc parameters
     "out_scale": 0.001, # 得到响应图后，乘以该数值作为最终响应图
@@ -23,6 +24,53 @@
         "factor1": 0.3018, # mot 系数 
         "factor2": 0.7096, # mix 系数
         "mix_factor": 0.00, # 混合 U 与 res 的系数
+    # inference parameters
+    "scale_num": 3,
+    "scale_step": 1.0375,
+    "scale_lr": 0.59,
+    "scale_penalty": 0.9745,
+    "window_influence": 0.176,
+    "response_sz": 17,
+    "response_up": 5, # 响应图上采样的倍数
+    "total_stride": 8, # 步距参考 Alexnet 里面的卷积层, 2 * 2 * 2 = 8
+    # train parameters
+    "epoch_num": 200, # 训练总轮数
+    "batch_size": 8, # 批次大小
+    "num_workers": 0, # 载入数据的线程数
+    "initial_lr": 1e-2, # 初始学习率（指数衰减学习率）
+    "ultimate_lr": 1e-4, # 终止学习率（指数衰减学习率）
+    "weight_decay": 5e-4, # SGD 权重衰减
+    "momentum": 0.9, # SGD 动量
+    "r_pos": 16,
+    "r_neg": 0
+}
+
+pre: 0.811
+cfg = {
+    # siamfc parameters
+    "out_scale": 0.001, # 得到响应图后，乘以该数值作为最终响应图
+    "exemplar_sz": 127, # 样本图像输入net的大小
+    "instance_sz": 255, # 搜索区域输入net的大小
+    "context": 0.50,
+    # cann parameters
+    "len": 85, # 
+    "steps": 8, # CANN 进行动力学响应的轮数
+    "dt": 1, # 时间步长，默认为 1
+    "tolerance_height": 0.80,
+    "tolerance_dis": 64,
+    "tolerant_ratio_max": 0.65, # 上限容忍度
+    "tolerant_ratio_min": 0.15, # 下限容忍度
+    "IoU_thresold": 0.15,
+    "scale_factor": 2, 
+        # trainable parameters
+        "tau": 0.7133, # 时间常数
+        "A": 2.0946, # 响应常数
+        "k": 0.0803, # 抑制因子
+        "a": 0.4040, # 空间常数
+        "factor0": 1.5559, # mu 系数
+        "factor1": 0.3018, # mot 系数 
+        "factor2": 0.7096, # mix 系数
+        "mix_factor": 0.9246153846153846, # 混合 U 与 res 的系数
     # inference parameters
     "scale_num": 3,
     "scale_step": 1.0375,

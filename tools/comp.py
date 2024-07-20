@@ -19,11 +19,7 @@ mode = 'eval'
 
 if __name__ == '__main__':
 
-    # mix_factors = np.linspace(0.90, 0.94, 40)
-    # print(mix_factors[24])
-    
-    
-    tracker_name = 'SiamFC_CANN_' + gen_ops.get_formatted_date()
+    tracker_name = 'Test' 
     net_path = os.path.join(work_path, 'pretrained/siamfc/siamfc_alexnet_e50_download.pth')
     cann_path = os.path.join(work_path, 'pretrained/otb100_1/siamfc_cann_e49.pth')
     data_dir = gen_ops.get_data_path(dataset='OTB100', mode='eval') 
@@ -31,6 +27,6 @@ if __name__ == '__main__':
     
     exp_tool = gen_ops.get_exp_tool(dataset=dataset, mode=mode, data_dir=data_dir) 
     
-    exp_tool.run(tracker, is_visualize=True, is_video_saving=False) # 运行测试
-    exp_tool.report([tracker.name]) # 测试结果报告
+    exp_tool.comp(tracker, name1='SiamFC', name2='Ours', is_visualize=False) # 运行测试
+    # exp_tool.report([tracker.name]) # 测试结果报告
     

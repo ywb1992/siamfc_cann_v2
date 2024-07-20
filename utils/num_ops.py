@@ -47,6 +47,15 @@ def even(x):
         x = round(x)
         return int(x // 2 * 2)
 
+def numpy_hw2wh(*args):
+    '''
+    Functions: 将输入的 (x, y) 转为 (y, x)
+    '''
+    if isinstance(args, tuple):
+        if len(args) == 1:
+            return args[0][..., ::-1]
+        return tuple([np.array(arg[..., ::-1]) for arg in args])    
+
 def min_max_norm(x: torch.Tensor):
     # x 为一个 3D 的 tensor，一维度是 batch，我们要对每一个矩阵分别 min-max 归一化
     batch_size= x.shape[0]

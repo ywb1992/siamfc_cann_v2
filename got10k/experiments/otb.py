@@ -62,7 +62,32 @@ class ExperimentOTB(object):
             assert len(boxes) == len(anno)
             
             self._record(record_file, boxes, times, gt_dist_in_imgs) # 记录它们
+    
+    def comp(self, runner, name1, name2, is_visualize=False):
+        print('Running tracker (%s, %s) on %s...' % (name1, name2, type(self.dataset).__name__)) # type(xxx).__name__ 类型的名字
+        
+        # 按顺序遍历所有的测试集，tqdm用于显示进度条
+        # 每次返回一整个视频序列的图片路径，和对应的groundtruth
+        for s, (img_files, anno) in tqdm(enumerate(self.dataset), total=len(self.dataset)):
+            # index, [routes], [annotations]
+            
+            # img_files = img_files[:50]
+            # anno = anno[:50]
+            
+            seq_name = self.dataset.seq_names[s] # 获取名字比如 Basketball
 
+            record_file1 = os.path.join(self.result_dir, 'Comp_%s_%s' % (name1, name2),
+                                        '%s_%s.txt' % (name1, seq_name)) # 保存时 tracker 的名字
+            record_file2 = os.path.join(self.result_dir, 'Comp_%s_%s' % (name1, name2),
+                                        '%s_%s.txt' % (name2, seq_name)) # 保存时 tracker 的名字
+            boxes1, boxes2, times1, times2 = runner.track_comparison(img_files, anno[0, :], anno, seq_name,
+                                                                     os.path.join(self.videos_dir, 
+                                                                                  'Comp_%s_%s' % (name1, name2)),
+                                                                     is_visualize=is_visualize) # 返回标注框列表和每一帧所用时间
+            
+            # 记录
+            self._record(record_file1, boxes1, times1, ce_per_frame=None) 
+            self._record(record_file2, boxes2, times2, ce_per_frame=None)
 
     def report(self, tracker_names):
 
@@ -239,6 +264,7 @@ class ExperimentOTB(object):
                 record_file).replace('.txt', '_ce.txt'))
             np.savetxt(ce_file, ce_per_frame, fmt='%.3f')
 
+
     def _calc_metrics(self, boxes, anno):
         # can be modified by children classes
         ious = rect_iou(boxes, anno)
@@ -349,8 +375,3 @@ class ExperimentOTB(object):
         
         #print('Saving precision plots to', prec_file)
         fig.savefig(prec_file, dpi=300)
-
-    def run_comparison(self, tracker, visualize=False):
-        for s, (img_files, anno) in tqdm(enumerate(self.dataset), total=len(self.dataset)):
-            seq_name = self.dataset.seq_names[s] 
-            tracker.track_comparison(img_files, anno[0, :], anno, seq_name, self.videos_dir) 

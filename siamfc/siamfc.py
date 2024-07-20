@@ -147,7 +147,7 @@ class TrackerSiamFC(Tracker):
         self.kernel = self.net.backbone(z)
         pass
     @torch.no_grad()
-    def update(self, img, video_saving=False): ##### 就是输入匹配帧，然后根据模板图像匹配，最后生成标注框
+    def update(self, img, is_video_saving=False): ##### 就是输入匹配帧，然后根据模板图像匹配，最后生成标注框
         # 设置成评估模式，因为训练的时候其实压根没用这个函数（
         self.net.eval()
 
@@ -264,7 +264,7 @@ class TrackerSiamFC(Tracker):
             self.failure_save.rps_mmax.append(rp_mmax)
             self.failure_save.imgs_rp.append(response_in_img)
         
-        if video_saving:
+        if is_video_saving:
             return box, response, sz_in_img
         else:
             return box, sz_in_img
