@@ -12,7 +12,7 @@ class CenterDistanceLoss(nn.Module):
     '''
     Functions: 定义了损失函数, 包括寻找循环重心和计算中心误差(CE)两个部分
     '''
-    def __init__(self, temperature=0.1):
+    def __init__(self, temperature=0.2):
         super(CenterDistanceLoss, self).__init__()
         self.tau = torch.tensor([temperature], device=device)
         
@@ -60,5 +60,5 @@ class CenterDistanceLoss(nn.Module):
         if center1.shape[0] != 1:
             center1 = center1.unsqueeze(0)
             center2 = center2.unsqueeze(0)
-        distance = torch.norm(center1 - center2, dim=1) ** 2  # Calculate the square of Euclidean distance
+        distance = torch.norm(center1 - center2, dim=1) # Calculate the square of Euclidean distance
         return torch.mean(distance)  # Square the distance and return Batch-mean

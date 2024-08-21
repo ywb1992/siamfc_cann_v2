@@ -112,6 +112,7 @@ def show_response(response,
         return response, mmin, mmax
     else:
         return response
+    
 def show_response_with_mark(response, pre_coor_wh, gt_coor_wh, colors=[(255, 255, 255), (255, 0, 0), (0, 255, 0)],
                   fig_n=2, delay=1, scale_factor=3, 
                   peaks_wh=None, peaks_colors=None,
@@ -144,7 +145,8 @@ def show_response_with_mark(response, pre_coor_wh, gt_coor_wh, colors=[(255, 255
     # 人工寻找的最值处
     if peaks_wh is not None:
         if peaks_colors is None:
-            peaks_colors = plt.cm.Blues(np.linspace(0.1, 0.9, 5))
+            peaks_num = peaks_wh.shape[0]
+            peaks_colors = plt.cm.Blues(np.linspace(0.1, 0.9, peaks_num))
             peaks_colors = peaks_colors[::-1]
             peaks_colors = [(int(color[2] * 255), int(color[1] * 255), int(color[0] * 255)) 
                             for color in peaks_colors]
@@ -318,3 +320,23 @@ def add_text_with_background(img, text, position_wh,
     # 在背景上添加文字
     cv2.putText(img, text, (position_wh[0], position_wh[1]), font, font_scale, font_color, line_type)
     return img
+
+
+def show_hist_comparison(hist1, weights1,
+                         hist2, weights2, 
+                         bins_num=20, 
+                         is_visualize=True):
+    '''
+    Functions: 显示两个直方图的对比
+    Processing Mode: numpy
+    '''
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 2, 1)
+    plt.hist(hist1, bins=20, weights=weights1, alpha=0.75, label='Original Data', color='red')
+    plt.legend()
+
+    plt.subplot(1, 2, 2)
+    plt.hist(hist2, bins=20, weights=weights2, alpha=0.75, label='Weighted Data')
+    plt.legend()
+
+    plt.show()

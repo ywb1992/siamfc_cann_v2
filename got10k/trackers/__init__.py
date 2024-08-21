@@ -63,14 +63,18 @@ class Tracker(object):
             'total_stride': 8, # 步距参考 Alexnet 里面的卷积层, 2 * 2 * 2 = 8
             # train parameters
             'epoch_num': 200, # 训练总轮数
-            'batch_size': 8, # 批次大小
+            'batch_size': 4, # 批次大小
             'num_workers': 0, # 载入数据的线程数
-            'initial_lr': 1e-2, # 初始学习率（指数衰减学习率）
-            'ultimate_lr': 1e-4, # 终止学习率（指数衰减学习率）
+            'initial_lr': 1e-3, # 初始学习率（指数衰减学习率）
+            'ultimate_lr': 1e-5, # 终止学习率（指数衰减学习率）
             'weight_decay': 5e-4, # SGD 权重衰减
             'momentum': 0.9, # SGD 动量
             'r_pos': 16,
-            'r_neg': 0
+            'r_neg': 0,
+            'rejection_dist_inf': 5,  # 舍弃小于 rejection_dist 的 loss 
+            'rejection_dist_sup': 20, # 舍弃大于 rejection_dist 的 loss
+            'rejection_rate': 0.1, # 舍弃 loss 的比例
+            'bins_num': 20, # 用于计算 loss 的分布的 bin 数
         }
         
         for key, val in kwargs.items():

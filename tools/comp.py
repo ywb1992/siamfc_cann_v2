@@ -17,12 +17,15 @@ from utils import gen_ops
 dataset = 'OTB100'
 mode = 'eval'
 
+
+
 if __name__ == '__main__':
 
     tracker_name = 'Test' 
     net_path = os.path.join(work_path, 'pretrained/siamfc/siamfc_alexnet_e50_download.pth')
     cann_path = os.path.join(work_path, 'pretrained/otb100_1/siamfc_cann_e49.pth')
     data_dir = gen_ops.get_data_path(dataset='OTB100', mode='eval') 
+
     tracker = CANN_Tracker(net_path=net_path, cann_path=None, tracker_name=tracker_name)
     
     exp_tool = gen_ops.get_exp_tool(dataset=dataset, mode=mode, data_dir=data_dir) 

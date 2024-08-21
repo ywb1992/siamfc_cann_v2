@@ -1,5 +1,6 @@
 from __future__ import absolute_import, division, print_function
 
+import itertools
 import json
 import os
 import sys
@@ -12,6 +13,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import tqdm
 from matplotlib import pyplot as plt
 from scipy.ndimage import gaussian_filter
 from scipy.spatial.distance import cdist
@@ -73,7 +75,7 @@ class CANN_Network(nn.Module):
         self.sqrt_factor0 = nn.Parameter(torch.sqrt(torch.tensor(factor0, device=device)))
         self.sqrt_factor1 = nn.Parameter(torch.sqrt(torch.tensor(factor1, device=device)))
         self.sqrt_factor2 = nn.Parameter(torch.sqrt(torch.tensor(factor2, device=device)))
-        self.sqrt_mix_factor = nn.Parameter(torch.sqrt(torch.tensor(mix_factor, device=device)))
+        self.logit_mix_factor = nn.Parameter(-torch.log(1 / torch.tensor(mix_factor, device=device) - 1))
         
         # 获取参数
         self.update_para()
@@ -90,7 +92,7 @@ class CANN_Network(nn.Module):
         self.factor0 = torch.square(self.sqrt_factor0)
         self.factor1 = torch.square(self.sqrt_factor1)
         self.factor2 = torch.square(self.sqrt_factor2)
-        self.mix_factor = torch.square(self.sqrt_mix_factor)
+        self.mix_factor = 1. / (1. + torch.exp(-self.logit_mix_factor))
         # self.mix_factor = nn.Parameter(torch.sqrt(torch.tensor(0.90, device=device)))
         
         # CANN稳定时，u 和 r 的峰值为 u_0 和 r_0
@@ -160,7 +162,7 @@ class CANN_Network(nn.Module):
         self.r = self.u ** 2 / (1.0 + self.k * torch.sum(self.u ** 2, dim=(1, 2), keepdim=True)) # 设置 r
         pass
     
-    def roll(self, index, dir):
+    def roll(self, index, dir, detach=True):
         '''
         Functions: 找到了三个尺度中合适的尺度 index 后, 使其进行朝着 dir 方向进行循环位移. 得到的 u 复制到其它尺度
         Params: index[三个尺度中, 要移动哪一个]; dir[方向]
@@ -172,6 +174,10 @@ class CANN_Network(nn.Module):
         
         cann_u = torch.roll(cann_u, shifts=dir, dims=(0, 1))
         cann_r = torch.roll(cann_r, shifts=dir, dims=(0, 1))
+        
+        if detach is True:
+            cann_u = cann_u.clone().detach()
+            cann_r = cann_r.clone().detach()
         
         self.u = cann_u.broadcast_to((self.scale_num, self.len, self.len))
         self.r = cann_r.broadcast_to((self.scale_num, self.len, self.len))
@@ -233,7 +239,6 @@ class CANN_Tracker(Tracker):
         self.optimizer = optim.Adam(self.net.parameters(), 
                                     lr=self.cfg.initial_lr,
                                     weight_decay=self.cfg.weight_decay)
-        
         # 设置指数下降学习器
         gamma = np.power(
             self.cfg.ultimate_lr / self.cfg.initial_lr,
@@ -321,7 +326,8 @@ class CANN_Tracker(Tracker):
     
     def track(self, img_files, box_wh, annos_wh, seq_name, 
               is_train=False, 
-              is_visualize=False, is_video_saving=False):
+              is_visualize=False, is_video_saving=False,
+              **kwargs):
         '''
         Functions: 进行一整个序列的追踪, 进行评估或者训练。
         Params: img_files[图像序列的路径]; box[第一帧的标注框]; anno[所有帧的标注框]; seq_name[视频序列的名字];
@@ -340,35 +346,54 @@ class CANN_Tracker(Tracker):
         vis_enss = [] # 用于保存每一帧的可视化图像(可视化了标注框)
         gt_dist_in_ress = [] # 记录中心误差（在 res 中的）
         gt_dist_in_imgs = [] # 记录中心误差（在 img 中的）
+        gt_tr_dist_in_ress = [] # 记录当前追踪区域中心与标注中心的距离（在 res 中的）
+        gt_tr_dist_in_imgs = [] # 记录当前追踪区域中心与标注中心的距离（在 img 中的）
         
         if is_train:
             total_turns = len(img_files) # 总追踪轮数
-            video_ce2 = 0 # 整个视频的中心误差平方总和
-            video_ce = 0 # 整个视频的中心误差总和
-            ce2_per_frame_cann = [] # 每帧的中心误差平方(CE^2)
-            ce_per_frame_cann = [] # 每帧的中心误差(CE)
+            ce2_avg_cann = 0 # 整个视频的中心误差平方总和
+            ce_avg_cann = 0 # 整个视频的中心误差总和
+            loss_cann_per_frame = [] # 每帧的 loss_cann (响应图中心误差)
+            loss_mix_per_frame = [] # 每帧的 loss_mix (响应图中心误差)
             stop_recording = False
+            valid_recording_turns = total_turns
         
         # 遍历每一帧图像, 并追踪
         for f, img_file in enumerate(img_files): 
             img = img_ops.read_image(img_file) # 读入图像，格式为: RGB, [0, 255], shape=(h, w, 3)
             img_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) # 转化为灰度图
             begin = time.time()
-        
+
+            # 标注中心
+            gt_center, _ = img_ops.get_center_sz(annos_wh[f], mode_transform=True)
+            
             if f == 0: # 第一帧，抽取模板图像，生成卷积核
                 self.init(img, box_wh, is_train=is_train) 
                 sz_in_img, gt_dist_in_res, gt_dist_in_img, vis_ens = 1, 0., 0., None
+                loss_cann = torch.tensor(0., device=device)
+                loss_mix = torch.tensor(0., device=device)
+                
+                # 追踪中心
+                tr_center = self.center.detach().cpu().numpy()
             else: # 后续帧：生成响应图，生成标注框
                 if pre_img.shape != img.shape: # 有些训练数据里面有问题，需要跳过
                     break 
-                boxes[f], sz_in_img, gt_dist_in_res, gt_dist_in_img, vis_ens = self.update(
+                # 追踪中心
+                tr_center = self.center.detach().cpu().numpy()
+                
+                update_result = self.update(
                         pre_img, img, 
                         pre_img_gray, img_gray,
                         annos_wh[f, :],
                         is_train=is_train, 
                         is_visualize=is_visualize,
-                        is_video_saving=is_video_saving
+                        is_video_saving=is_video_saving,
+                        **kwargs
                 ) # 更新标注框，并获得(标注框, 图中尺寸, 可视化图像)
+                if is_train is False:
+                    boxes[f], sz_in_img, gt_dist_in_res, gt_dist_in_img, vis_ens = update_result
+                else:
+                    boxes[f], sz_in_img, gt_dist_in_res, gt_dist_in_img, vis_ens, loss_cann, loss_mix = update_result
             vis_enss.append(vis_ens)
             
             
@@ -379,22 +404,14 @@ class CANN_Tracker(Tracker):
             gt_dist_in_ress.append(gt_dist_in_res)    
             gt_dist_in_imgs.append(gt_dist_in_img)
             
-            # 如果处于训练模式，那么记录中心误差并反向传播  
+            # 记录追踪区域中心与标注中心的距离
+            gt_tr_dist_in_imgs.append(np.linalg.norm(gt_center - tr_center))
+            gt_tr_dist_in_ress.append(np.linalg.norm(gt_center - tr_center) / sz_in_img * self.cfg.len)
+            
+            # 如果处于训练模式，那么记录中心误差并反向传播。但这里记录的是 res 内的误差哟！
             if is_train: 
-                gt_center, _ = img_ops.get_center_sz(annos_wh[f])
-                frame_ce2 = self.criterion(self.center, torch.from_numpy(gt_center)) # 获取含有梯度的中心误差, ce ** 2
-                frame_ce = torch.sqrt(frame_ce2).item() # 获取中心误差, ce
-                
-                # 当与原图像离得太远后，就没必要反向传播了
-                if stop_recording == False:
-                    video_ce2 += frame_ce2
-                    video_ce += frame_ce
-                else:
-                    video_ce2 += frame_ce2.detach()
-                    video_ce += frame_ce
-                
-                ce2_per_frame_cann.append(frame_ce2.item()) # 记录每帧的中心误差平方
-                ce_per_frame_cann.append(frame_ce) # 记录每帧的中心误差
+                ce_frame_k_cann = np.linalg.norm(self.center.detach().cpu().numpy() - gt_center) # 获取图像上的中心误差, ce ** 2
+                ce2_frame_k_cann = np.square(ce_frame_k_cann) # 获取图像上中心误差, ce
                 
                 # 格式转化, 从 ltwh/(lx, ly, w, h) 转化为 ltrb/(lx, ly, rx, ry)
                 p_box = np.array([
@@ -411,42 +428,61 @@ class CANN_Tracker(Tracker):
                               torch.from_numpy(a_box).unsqueeze(0))
                 if IoU.item() < self.cfg.IoU_thresold:
                     stop_recording = True
+                    valid_recording_turns = f
+                
+                # 当与原图像离得太远后，就不能反向传播了
+                if stop_recording == False:
+                    loss_cann_per_frame.append(loss_cann) # 记录每帧的中心误差平方, 在 res 内
+                    loss_mix_per_frame.append(loss_mix) # 记录每帧的中心误差, 在 res 内
+                    if f != 0:
+                        assert loss_cann.requires_grad == True and loss_mix.requires_grad == True
+                else:
+                    loss_cann_per_frame.append(loss_cann.detach())
+                    loss_mix_per_frame.append(loss_mix.detach())
+                    
+                ce2_avg_cann += ce2_frame_k_cann.item()
+                ce_avg_cann += ce_frame_k_cann.item()
+                
+                
+
         
     
-        global tl1, tl2, tl3, tl4, tl5, tl6, tl7, tl8
-        print("t1: {}, t2: {}, t3: {}, t4: {}, t5: {}, t6: {}, t7: {}, t8: {}".format(
-            tl1 / (len(img_files) - 1),
-            tl2 / (len(img_files) - 1),
-            tl3 / (len(img_files) - 1),
-            tl4 / (len(img_files) - 1),
-            tl5 / (len(img_files) - 1),
-            tl6 / (len(img_files) - 1),
-            tl7 / (len(img_files) - 1),
-            tl8 / (len(img_files) - 1)
-        ))
+        # global tl1, tl2, tl3, tl4, tl5, tl6, tl7, tl8
+        # print("t1: {}, t2: {}, t3: {}, t4: {}, t5: {}, t6: {}, t7: {}, t8: {}".format(
+        #     tl1 / (len(img_files) - 1),
+        #     tl2 / (len(img_files) - 1),
+        #     tl3 / (len(img_files) - 1),
+        #     tl4 / (len(img_files) - 1),
+        #     tl5 / (len(img_files) - 1),
+        #     tl6 / (len(img_files) - 1),
+        #     tl7 / (len(img_files) - 1),
+        #     tl8 / (len(img_files) - 1)
+        # ))
 
                 
         # 追踪完整个序列后, 和 siamfc 的追踪效果进行比较, 并进行反向传播(但尚不更新梯度)
         if is_train:
-            siamfc_boxes, _, _ = self.siamfc.track(img_files, box_wh, annos_wh, "test", False, False)
+            ## 首先计算 SiamFC 的
+            siamfc_boxes, _, _, _ = self.siamfc.track(img_files, box_wh, annos_wh, "test", False, False)
             
             siamfc_boxes_center, _ = img_ops.get_center_sz(siamfc_boxes)
-            gt_center, _ = img_ops.get_center_sz(annos_wh)
+            gt_center_wh, _ = img_ops.get_center_sz(annos_wh)
             
-            ce_per_frame_siamfc = [np.linalg.norm(siamfc_boxes_center[i] - gt_center[i]) 
+            ce_per_frame_siamfc = [np.linalg.norm(siamfc_boxes_center[i] - gt_center_wh[i]).item() 
                                    for i in range(len(siamfc_boxes_center))]
             ce2_per_frame_siamfc = [ce ** 2 for ce in ce_per_frame_siamfc]
 
-            siamfc_avg_ce2 = np.sum(ce2_per_frame_siamfc) / total_turns
-            cann_avg_ce2 = video_ce2 / total_turns
+            ce_avg_siamfc = np.sum(ce_per_frame_siamfc) / total_turns
+            ce2_avg_siamfc = np.sum(ce2_per_frame_siamfc) / total_turns
             
-            siamfc_avg_ce = np.sqrt(siamfc_avg_ce2)
-            cann_avg_ce = video_ce / total_turns
+            ce2_avg_cann /= total_turns
+            ce_avg_cann /= total_turns
             
-            print("tunrs: {}/{}, cann_ce: {}, siamfc_ce: {}".format(
-                total_turns, len(img_files), cann_avg_ce, siamfc_avg_ce
+            print("tunrs: {}/{}\ncann_ce: {}, siamfc_ce: {}\ncann_ce2: {}, siamfc_ce2: {}".format(
+               valid_recording_turns, len(img_files), ce_avg_cann, ce_avg_siamfc, ce2_avg_cann, ce2_avg_siamfc
             ))
-            return cann_avg_ce2, siamfc_avg_ce2, cann_avg_ce, siamfc_avg_ce
+            return (ce2_avg_cann, ce_avg_cann, ce2_avg_siamfc, ce_avg_siamfc, loss_cann_per_frame, loss_mix_per_frame,
+                    valid_recording_turns, gt_tr_dist_in_ress, gt_tr_dist_in_imgs)
         else:     
             return boxes, times, vis_enss, gt_dist_in_ress, gt_dist_in_imgs
         # 返回[每一帧的标注框], [每一帧图像的用时], [每一帧的可视化图像], [每一帧的 res 中心误差], [每一帧的 img 中心误差]
@@ -455,7 +491,8 @@ class CANN_Tracker(Tracker):
                pre_img_gray, img_gray,
                anno_wh,
                is_train=False, 
-               is_visualize=False, is_video_saving=False): 
+               is_visualize=False, is_video_saving=False,
+               **kwargs): 
         '''
         Functions: 进行当前帧标注框的预测
         '''
@@ -479,7 +516,6 @@ class CANN_Tracker(Tracker):
         response = responses[max_index] # 取出对应响应图
         sz_in_img = self.upscale_sz * (self.cfg.total_stride / self.cfg.response_up) \
                         * (self.x_sz * self.scale_factors[max_index]) / self.cfg.instance_sz # 获得响应图在原图中的对应尺寸
-        
 
         _t2 = time.time()
         # 第三步：获得 cann 的 inputs
@@ -510,9 +546,43 @@ class CANN_Tracker(Tracker):
             self.runner.set_input_directly(real_input)
             self.runner.execute(self.cfg.dt)
             pass
-        cann_u = self.net.u.squeeze()
         
         self.last_input = inputs_tensor
+        
+        ## 这里找到 cann 的中心, 为之后进行循环位移做准备
+        cann_u = self.net.u.squeeze()
+        if is_train is False:
+            max_indice4cann = torch.argmax(cann_u.detach().reshape(-1))
+            max_position4cann = torch.stack((max_indice4cann // cann_u.shape[1], max_indice4cann % cann_u.shape[1]))
+        else:
+            max_position4cann = self.criterion.get_center(cann_u.unsqueeze(0))
+        
+        ### --- 开始进行 peak alignment --- ###
+        if "peak_dist_th" in kwargs:
+            peak_dist_th = kwargs["peak_dist_th"]
+            input_peaks = self._find_peak(inputs_tensor.cpu().detach().squeeze().numpy(), num_peaks=3)
+            input_peaks = torch.from_numpy(input_peaks).to(device).float()
+            peaks_disp_res = input_peaks - max_position4cann.unsqueeze(0)
+            peaks_disp_img = peaks_disp_res / self.cfg.len * sz_in_img
+            peaks_disp_box_ratio = peaks_disp_img / torch.tensor(self.target_sz, device=device).unsqueeze(0)
+            peaks_dist_box_ratio = torch.norm(peaks_disp_box_ratio, dim=1)
+            
+            # print(peaks_dist_box_ratio)
+            
+            valid_peaks = input_peaks[peaks_dist_box_ratio < peak_dist_th]
+            valid_peaks_disp_res = peaks_disp_res[peaks_dist_box_ratio < peak_dist_th]
+            
+            if valid_peaks.numel() > 0 and torch.sum(valid_peaks_disp_res[0]) > 1e-6:
+                print(peaks_disp_box_ratio)
+                # 按照 scipy 的寻找方式, 第一个 peak 是最大的
+                greatest_peak = valid_peaks[0]
+                self.net.roll(0, greatest_peak - max_position4cann)
+                cann_u = self.net.u.squeeze()
+                max_position4cann = greatest_peak
+        else:
+            input_peaks = torch.zeros((1, 2), device=device)
+        ### --- 结束进行 peak alignment --- ###
+        
         
         _t4 = time.time()
         # 第五步, 获得经过 hamming window 处理过的 distribution 归一化的 response
@@ -524,7 +594,8 @@ class CANN_Tracker(Tracker):
         ## 为了使 response 能与 cann_u 进行混合, 需要进行 min-max 归一化
         response = response / torch.max(response)
         cann_u = cann_u / torch.max(cann_u)
-        modified_response = self.net.mix_factor * response + (1. - self.net.mix_factor) * cann_u # 混合
+        modified_response = self.net.mix_factor * response.detach() + \
+                            (1. - self.net.mix_factor) * cann_u.detach() # 混合，但都没有梯度
         
         _t5 = time.time()
         # 第六步, 获得响应图中的最大值(软最大值)处
@@ -533,18 +604,20 @@ class CANN_Tracker(Tracker):
             max_position4mix = torch.stack((max_indice // modified_response.shape[1], max_indice % modified_response.shape[1]))
         elif is_train == True:
             max_position4mix = self.criterion.get_center(modified_response.unsqueeze(0))
+
+            
         
-        ## 这里找到 cann 的中心, 为之后进行循环位移做准备
-        c_max_indice = torch.argmax(cann_u.detach().reshape(-1))
-        c_max_position = torch.stack((c_max_indice // cann_u.shape[1], c_max_indice % cann_u.shape[1]))
-        cann_center = c_max_position
         
         _t6 = time.time()
         # 第七步，获取对中心的预测
         disp_in_res = max_position4mix - self.constant_center
         disp_in_img = disp_in_res / self.cfg.len * sz_in_img
         self.center += disp_in_img.squeeze() # 更新中心位置
-        self.net.roll(0, self.constant_center - cann_center)
+        if torch.any(self.center < 0) or torch.any(self.center[0] > img.shape[0]) \
+                                      or torch.any(self.center[1] > img.shape[1]):
+            self.center = torch.clamp(self.center, min=0, max=sz_in_img)
+        
+        self.net.roll(0, self.constant_center - max_position4cann)
         self.last_input = num_ops.roll(self.last_input, disp_in_res, self.cfg.len)
         
         ## 顺带计算中心误差
@@ -554,14 +627,26 @@ class CANN_Tracker(Tracker):
         gt_dist_in_img = np.linalg.norm(gt_disp_in_img)
         gt_dist_in_res = np.linalg.norm(gt_disp_in_res)
         
-        # 第八步，获取对尺寸的预测
+        # 第八步，获取两个 loss
+        if is_train is True:
+            ## 首先获取 cann 中心与 res 上 gt 的误差
+            gt_center_res = self.constant_center.squeeze() + torch.from_numpy(gt_disp_in_res).to(device)
+            loss_cann = self.criterion(max_position4cann, gt_center_res)
+            ## 然后获取 modified_response 中心与 res 上 gt 的误差。这里只有系数需要训练
+            loss_mix = self.criterion(max_position4mix, gt_center_res)
+
+            
+        # 第九步，获取对尺寸的预测
         scale =  (1 - self.cfg.scale_lr) * 1.0 + \
             self.cfg.scale_lr * self.scale_factors[max_index]
-        self.target_sz *= scale
-        self.x_sz *= scale
+        if self.target_sz[0] * scale < 10 or self.target_sz[1] * scale < 10:
+            pass
+        else:
+            self.target_sz *= scale            
+            self.x_sz *= scale
         
         
-        # 第九步：从 cchw/(cy, cx, h, w)格式转为 ltwh/(lx, ly, w, h) 形式的 box, 坐标系从 1 开始
+        # 第十步：从 cchw/(cy, cx, h, w)格式转为 ltwh/(lx, ly, w, h) 形式的 box, 坐标系从 1 开始
         box_wh = np.array([
             (self.center[1].cpu().detach().numpy() + 1) - (self.target_sz[1] - 1) / 2,
             (self.center[0].cpu().detach().numpy() + 1) - (self.target_sz[0] - 1) / 2,
@@ -573,9 +658,10 @@ class CANN_Tracker(Tracker):
         # 第十步：可视化与视频保存
         vis_ens = None # 可视化图片的整体
         if is_visualize:
-            vis_res = visualization.show_response_with_mark(response.squeeze().cpu().detach().numpy(), 
-                                        max_position4mix.cpu().detach().numpy(),
-                                        gt_center, 
+            vis_res = visualization.show_response_with_mark(modified_response.squeeze().cpu().detach().numpy(), 
+                                        num_ops.numpy_hw2wh(max_position4mix.squeeze().cpu().detach().numpy()),
+                                        num_ops.numpy_hw2wh(gt_center), 
+                                        peaks_wh=num_ops.numpy_hw2wh(input_peaks.cpu().detach().numpy()),
                                         is_visualize=True)
             vis_img = visualization.show_image(img, [box_wh, anno_wh], 
                                      is_visualize=True)
@@ -599,8 +685,12 @@ class CANN_Tracker(Tracker):
                     c_max_position.squeeze().detach().cpu().numpy(),
                     sz_in_img
                    )
-        return box_wh, sz_in_img, gt_dist_in_img, gt_dist_in_res, vis_ens
-          
+        
+        return_values = (box_wh, sz_in_img, gt_dist_in_res, gt_dist_in_img, vis_ens)
+        if is_train:
+            return_values += (loss_cann, loss_mix)
+        return return_values
+    
     @torch.no_grad()    
     def update_like_siamfc(self, pre_img, img, is_train=False, visualize=False): 
         '''
@@ -656,195 +746,7 @@ class CANN_Tracker(Tracker):
         
         return box, None
     
-    @torch.enable_grad() # 以下是训练的时候用的
-    def train_over(self, seqs, save_dir):
-        '''
-        Functions: 训练整个数据集
-        '''
-        save_dir = os.path.join(save_dir, gen_ops.get_formatted_date()) # 设置保存路径
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
-        self.net.train()
-
-        # 这里定义了数据集和数据加载器
-        dataset = CANN_Pair(
-            siamfc=self.siamfc,
-            seqs=seqs,
-        )
-        dataloader = DataLoader(
-            dataset,
-            batch_size=self.cfg.batch_size,
-            shuffle=True,
-            num_workers=self.cfg.num_workers,
-            collate_fn=my_collate_fn,
-            drop_last=True
-        )
-        
-        # 这里定义了 loss 和参数的保存字典
-        over_all_json_path = os.path.join(save_dir, 'loss_and_para.json')
-        over_all_dict = {}
-        
-        # 整体训练
-        for epoch in range(self.cfg.epoch_num):
-            epoch_cann_ce2 = 0
-            epoch_siamfc_ce2 = 0
-            epoch_cann_ce = 0
-            epoch_siamfc_ce = 0
-            
-            it_num = len(dataloader) # 限定每一个 epoch 的训练 batch 量, 太多吃不消
-            
-            # 遍历本次 epoch 每一个 batch
-            for it, batch in enumerate(dataloader):
-                if it > it_num - 1:
-                    break
-                
-                # 训练该 batch, 并获得 loss
-                cann_ce2, siamfc_ce2, cann_ce, siamfc_ce = self.train_batch(batch)
-                epoch_cann_ce2 += cann_ce2
-                epoch_siamfc_ce2 += cann_ce2
-                epoch_cann_ce += cann_ce
-                epoch_siamfc_ce += siamfc_ce
-                
-                # 输出相关信息
-                print('Epoch: {} [{}/{}] \nCANN AVG CE2: {:.2f}; SiamFC AVG CE2: {:.2f}\nCANN AVG CE: {:.2f}; SiamFC AVG CE: {:.2f}'.format(
-                    epoch + 1, it + 1, len(dataloader), 
-                    cann_ce2, siamfc_ce2,
-                    cann_ce, siamfc_ce))
-                print("Value of a is ", np.array2string(self.net.a.detach().cpu().numpy(),precision=5, floatmode='fixed'))
-                print("Value of A is ", np.array2string(self.net.A.detach().cpu().numpy(),precision=5, floatmode='fixed'))
-                print("Value of k is ", np.array2string(self.net.k.detach().cpu().numpy(),precision=5, floatmode='fixed'))
-                print("Value of tau is ", np.array2string(self.net.tau.detach().cpu().numpy(),precision=5, floatmode='fixed'))
-                print("Value of factor for inputs is ", np.array2string(self.net.factor0.detach().cpu().numpy(),precision=5, floatmode='fixed'))
-                print("Value of factor for movements is", np.array2string(self.net.factor1.detach().cpu().numpy(),precision=5, floatmode='fixed'))
-                print("Value of factor for mixeds is ", np.array2string(self.net.factor2.detach().cpu().numpy(),precision=5, floatmode='fixed'))
-                print("Value of factor for total mixeds is ", np.array2string(self.net.mix_factor.detach().cpu().numpy(),precision=5, floatmode='fixed'))
-                print("")
-                sys.stdout.flush()
-
-                # 保存 loss 和参数信息
-                over_all_dict[(epoch + 1, it + 1)] = {
-                    'cann_ce2': cann_ce2,
-                    'siamfc_ce2': siamfc_ce2,
-                    'cann_ce': cann_ce,
-                    'siamfc_ce': siamfc_ce,
-                    'a': float(self.net.a.detach().cpu().numpy()),
-                    'A': float(self.net.A.detach().cpu().numpy()),
-                    'k': float(self.net.k.detach().cpu().numpy()),
-                    'tau': float(self.net.tau.detach().cpu().numpy()),
-                    'factor0': float(self.net.factor0.detach().cpu().numpy()),
-                    'factor1': float(self.net.factor1.detach().cpu().numpy()),
-                    'factor2': float(self.net.factor2.detach().cpu().numpy()),
-                    'mix_factor': float(self.net.mix_factor.detach().cpu().numpy())
-                }
-            
-            # 保存当前 epoch 的 loss 和参数信息
-            over_all_dict[(epoch + 1, 0)] = {
-                'cann_ce2': epoch_cann_ce2 / it_num,
-                'siamfc_ce2': epoch_siamfc_ce2 / it_num,
-                'cann_ce': epoch_cann_ce / it_num,
-                'siamfc_ce': epoch_siamfc_ce / it_num,
-                'a': float(self.net.a.detach().cpu().numpy()),
-                'A': float(self.net.A.detach().cpu().numpy()),
-                'k': float(self.net.k.detach().cpu().numpy()),
-                'tau': float(self.net.tau.detach().cpu().numpy()),
-                'factor0': float(self.net.factor0.detach().cpu().numpy()),
-                'factor1': float(self.net.factor1.detach().cpu().numpy()),
-                'factor2': float(self.net.factor2.detach().cpu().numpy()),
-                'mix_factor': float(self.net.mix_factor.detach().cpu().numpy())
-            }
-            
-            # 进行学习率调整
-            self.lr_scheduler.step()
-                   
-            # 保存网络参数
-            net_path = os.path.join(
-                save_dir, 'siamfc_cann_e%d.pth' % (epoch + 1))
-            torch.save(self.net.state_dict(), net_path)
-            
-            # 保存字典
-            with open(over_all_json_path, 'w') as f:
-                json.dump({str(k): over_all_dict[k] for k in over_all_dict}, f)
-    
-    def train_batch(self, batch):
-        '''
-        Functions: 训练当前 batch 内的 batch_size 个序列
-        '''
-        self.net.train(True)
-        self.siamfc.net.eval()
-        seq_imgs_path_list, seq_annos_list, seq_lens_list = batch
-        # batch[0]: 序列图像路径 list, 4 个 (seq_len)
-        # batch[1]: 标注框框 list, 4 个 (seq_len, 4)
-        # batch[2]: 序列长度 list, 4 个 (1)
-        
-        with torch.set_grad_enabled(True):
-            
-            cann_ce2 = 0
-            siamfc_ce2 = 0
-            cann_ce = 0
-            siamfc_ce = 0
-            self.optimizer.zero_grad()
-            
-            for b in range(self.cfg.batch_size):
-                print("batch_num:", b, end=";")
-                # 第一步: 取出数据
-                seq_imgs_path, seq_annos, seq_len = seq_imgs_path_list[b], seq_annos_list[b], seq_lens_list[b] 
-                # 第二步: 进行全序列追踪, 并获得 loss
-                b_cann_ce2, b_siamfc_ce2, b_cann_ce, b_siamfc_ce = self.track(
-                    seq_imgs_path, seq_annos[0], seq_annos, 'train', is_train=True, visualize=True
-                ) # loss 是 ce ** 2
-                
-                b_cann_ce2 = b_cann_ce2 / self.cfg.batch_size
-                b_cann_ce2.backward()
-                
-                cann_ce2 += b_cann_ce2
-                siamfc_ce2 += b_siamfc_ce2
-                cann_ce += b_cann_ce
-                siamfc_ce += b_siamfc_ce
-                
-            cann_ce2 = cann_ce2 
-            siamfc_ce2 = siamfc_ce2 / self.cfg.batch_size
-            cann_ce = cann_ce / self.cfg.batch_size
-            siamfc_ce = siamfc_ce / self.cfg.batch_size
-            
-            # 在 self.track 中已经反向传播, 这里直接梯度下降
-            self.optimizer.step()
-            
-            # 输出梯度信息
-            for name, param in self.net.named_parameters():
-                print(f"Parameter name: {name}")
-                print(f"Gradient: {param.grad}")
-        
-        return cann_ce2.item(), siamfc_ce2.item(), cann_ce, siamfc_ce
-    
-    
-    def _get_resized_response(self, kernel, instance):
-        '''
-        Functions: 返回 272 * 272 的响应图
-        '''
-        instance_features = self.siamfc.net.backbone(instance) # 获得 (bs, 256, 6, 6) 的搜索区域特征图
-        responses = self.siamfc.net.head(kernel, instance_features) # 获得 (bs, 1, 17, 17) 的响应图
-        responses = img_ops.upsample(responses, self.cfg.response_sz,
-                                    self.upscale_sz) # 获得 (bs, 1, 272, 272) 的响应图
-        return responses
-    
-    def _find_peak(self, response, num_peaks=5):
-        response = (response - np.min(response)) / (np.max(response) - np.min(response))
-        pad_width = 10
-        smoothing_sigma = 1
-        min_distance = 4
-        threshold_rel = 0.6
-        # 步骤 0: 填充，使得边缘的局部最值能被找到
-        response = np.pad(response, pad_width=pad_width, mode='constant')
-        
-        # 步骤 1: 平滑处理
-        smoothed_response = gaussian_filter(response, sigma=smoothing_sigma)
-        
-        # 步骤 2: 寻找局部最大值
-        peaks = peak_local_max(smoothed_response, min_distance=min_distance, threshold_rel=threshold_rel, num_peaks=num_peaks)
-        peaks = peaks - pad_width
-        
-        return peaks  
-    
+    @torch.no_grad()
     def track_comparison(self, img_files, box_wh, annos_wh, seq_name, save_dir, is_visualize=False):
         '''
         Functions: 对比 siamfc 和 cann 的追踪效果
@@ -947,3 +849,302 @@ class CANN_Tracker(Tracker):
         video_save.save(is_visualize=is_visualize)
         return boxes1, boxes2, times1, times2
     
+    
+    @torch.enable_grad() # 以下是训练的时候用的
+    def train_over(self, seqs, save_dir, is_visualize=False):
+        '''
+        Functions: 训练整个数据集
+        '''
+        save_dir = os.path.join(save_dir, gen_ops.get_formatted_date()) # 设置保存路径
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        self.net.train()
+
+        # 这里定义了数据集和数据加载器
+        dataset = CANN_Pair(
+            siamfc=self.siamfc,
+            seqs=seqs,
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=self.cfg.batch_size,
+            shuffle=True,
+            num_workers=self.cfg.num_workers,
+            collate_fn=my_collate_fn,
+            drop_last=True
+        )
+        
+        # 这里定义了 loss 和参数的保存字典
+        over_all_json_path = os.path.join(save_dir, 'loss_and_para.json')
+        over_all_dict = {}
+        
+        # 整体训练
+        for epoch in range(self.cfg.epoch_num):
+            epoch_mix_ce2 = 0
+            epoch_cann_ce2 = 0
+            epoch_siamfc_ce2 = 0
+            
+            epoch_mix_ce = 0
+            epoch_cann_ce = 0
+            epoch_siamfc_ce = 0
+            
+            epoch_loss = 0
+            epoch_total_successfully_tracked_frames = 0
+            
+            it_num = len(dataloader)# 限定每一个 epoch 的训练 batch 量, 太多吃不消
+            
+            # 遍历本次 epoch 每一个 batch
+            for it, batch in enumerate(dataloader):
+                if it > it_num - 1:
+                    break
+                
+                # 训练该 batch, 并获得 loss
+                (mix_ce2, cann_ce2, siamfc_ce2, 
+                 mix_ce, cann_ce, siamfc_ce,
+                 loss, total_successfully_tracked_frames) = self.train_batch(batch, is_visualize=is_visualize)
+                
+                epoch_mix_ce2 += mix_ce2
+                epoch_cann_ce2 += cann_ce2
+                epoch_siamfc_ce2 += siamfc_ce2
+                
+                epoch_mix_ce += mix_ce
+                epoch_cann_ce += cann_ce
+                epoch_siamfc_ce += siamfc_ce
+                
+                epoch_loss += loss
+                epoch_total_successfully_tracked_frames += total_successfully_tracked_frames
+                
+                
+                # 输出相关信息
+                print('Epoch: {} [{}/{}] \nMIX AVG CE2: {:.2f}; SiamFC AVG CE2: {:.2f}\nMIX AVG CE: {:.2f}; SiamFC AVG CE: {:.2f}'.format(
+                    epoch + 1, it + 1, len(dataloader), 
+                    mix_ce2, siamfc_ce2,
+                    mix_ce, siamfc_ce))
+                print("Value of a is ", np.array2string(self.net.a.detach().cpu().numpy(),precision=5, floatmode='fixed'))
+                print("Value of A is ", np.array2string(self.net.A.detach().cpu().numpy(),precision=5, floatmode='fixed'))
+                print("Value of k is ", np.array2string(self.net.k.detach().cpu().numpy(),precision=5, floatmode='fixed'))
+                print("Value of tau is ", np.array2string(self.net.tau.detach().cpu().numpy(),precision=5, floatmode='fixed'))
+                print("Value of factor for inputs is ", np.array2string(self.net.factor0.detach().cpu().numpy(),precision=5, floatmode='fixed'))
+                print("Value of factor for movements is", np.array2string(self.net.factor1.detach().cpu().numpy(),precision=5, floatmode='fixed'))
+                print("Value of factor for mixeds is ", np.array2string(self.net.factor2.detach().cpu().numpy(),precision=5, floatmode='fixed'))
+                print("Value of factor for total mixeds is ", np.array2string(self.net.mix_factor.detach().cpu().numpy(),precision=5, floatmode='fixed'))
+                print("")
+                sys.stdout.flush()
+
+                # 保存 loss 和参数信息
+                over_all_dict[(epoch + 1, it + 1)] = {
+                    'mix_ce2': mix_ce2,
+                    'cann_ce2': cann_ce2,
+                    'siamfc_ce2': siamfc_ce2,
+                    'mix_ce': mix_ce,
+                    'cann_ce': cann_ce,
+                    'siamfc_ce': siamfc_ce,
+                    'loss': loss,
+                    'total_successfully_tracked_frames': total_successfully_tracked_frames,
+                    'a': float(self.net.a.detach().cpu().numpy()),
+                    'A': float(self.net.A.detach().cpu().numpy()),
+                    'k': float(self.net.k.detach().cpu().numpy()),
+                    'tau': float(self.net.tau.detach().cpu().numpy()),
+                    'factor0': float(self.net.factor0.detach().cpu().numpy()),
+                    'factor1': float(self.net.factor1.detach().cpu().numpy()),
+                    'factor2': float(self.net.factor2.detach().cpu().numpy()),
+                    'mix_factor': float(self.net.mix_factor.detach().cpu().numpy())
+                }
+            
+            # 保存当前 epoch 的 loss 和参数信息
+            over_all_dict[(epoch + 1, 0)] = {
+                'mix_ce2': epoch_mix_ce2 / it_num,
+                'cann_ce2': epoch_cann_ce2 / it_num,
+                'siamfc_ce2': epoch_siamfc_ce2 / it_num,
+                'mix_ce': epoch_mix_ce / it_num,
+                'cann_ce': epoch_cann_ce / it_num,
+                'siamfc_ce': epoch_siamfc_ce / it_num,
+                'loss': epoch_loss / it_num,
+                'total_successfully_tracked_frames': epoch_total_successfully_tracked_frames / it_num,
+                'a': float(self.net.a.detach().cpu().numpy()),
+                'A': float(self.net.A.detach().cpu().numpy()),
+                'k': float(self.net.k.detach().cpu().numpy()),
+                'tau': float(self.net.tau.detach().cpu().numpy()),
+                'factor0': float(self.net.factor0.detach().cpu().numpy()),
+                'factor1': float(self.net.factor1.detach().cpu().numpy()),
+                'factor2': float(self.net.factor2.detach().cpu().numpy()),
+                'mix_factor': float(self.net.mix_factor.detach().cpu().numpy())
+            }
+            
+            # 进行学习率调整
+            self.lr_scheduler.step()
+                   
+            # 保存网络参数
+            net_path = os.path.join(
+                save_dir, 'siamfc_cann_e%d.pth' % (epoch + 1))
+            torch.save(self.net.state_dict(), net_path)
+            
+            # 保存字典
+            with open(over_all_json_path, 'w') as f:
+                json.dump({str(k): over_all_dict[k] for k in over_all_dict}, f)
+    
+    @torch.enable_grad()
+    def train_batch(self, batch, is_visualize=False):
+        '''
+        Functions: 训练当前 batch 内的 batch_size 个序列
+        '''
+        self.net.train(True)
+        self.siamfc.net.eval()
+        seq_imgs_path_list, seq_annos_list, seq_lens_list = batch
+        # batch[0]: 序列图像路径 list, 4 个 (seq_len)
+        # batch[1]: 标注框框 list, 4 个 (seq_len, 4)
+        # batch[2]: 序列长度 list, 4 个 (1)
+        
+        with torch.set_grad_enabled(True):
+            total_successfully_tracked_frames = 0
+            
+            loss_cann = []
+            loss_mix = []
+        
+            
+            mix_ce2 = 0
+            cann_ce2 = 0
+            siamfc_ce2 = 0
+            mix_ce = 0
+            cann_ce = 0
+            siamfc_ce = 0
+            
+            self.optimizer.zero_grad()
+            
+            
+            for b in range(self.cfg.batch_size):
+                print("batch_num:", b, end=";")
+                # 第一步: 取出数据
+                seq_imgs_path, seq_annos, seq_len = seq_imgs_path_list[b], seq_annos_list[b], seq_lens_list[b] 
+                # 第二步: 进行全序列追踪, 并获得每一帧的 loss
+                (ce2_avg_mix, ce_avg_mix, ce2_avg_siamfc, ce_avg_siamfc,
+                 loss_cann_per_frame, loss_mix_per_frame,
+                 valid_recording_turns, gt_tr_dist_in_ress, gt_tr_dist_in_imgs) = self.track(
+                    seq_imgs_path, seq_annos[0], seq_annos, 'train', is_train=True, is_visualize=is_visualize
+                ) 
+                # 统计成功的追踪帧
+                total_successfully_tracked_frames += valid_recording_turns
+                
+                # 统计误差
+                siamfc_ce2 += ce2_avg_siamfc
+                siamfc_ce += ce_avg_siamfc
+                mix_ce2 += ce2_avg_mix
+                mix_ce += ce_avg_mix
+                cann_ce += sum([loss.item() for loss in loss_cann_per_frame])
+                cann_ce2 += sum([loss.item() ** 2 for loss in loss_cann_per_frame])
+                
+                # 统计有效的 loss
+                ## 首先, 统计在大小范围内的 loss
+                valid_indices = np.logical_and(self.cfg.rejection_dist_inf < np.array(gt_tr_dist_in_ress),
+                                                np.array(gt_tr_dist_in_ress) < self.cfg.rejection_dist_sup)
+                ## 其次，只要没有 detach 的 loss
+                loss_cann_per_frame_valid = loss_cann_per_frame[:valid_recording_turns]
+                loss_mix_per_frame_valid = loss_mix_per_frame[:valid_recording_turns]
+                valid_indices = valid_indices[:valid_recording_turns]
+                ## 最后，取出大小范围内的 loss
+                loss_cann_per_frame_valid = list(itertools.compress(loss_cann_per_frame_valid, valid_indices))
+                loss_mix_per_frame_valid = list(itertools.compress(loss_mix_per_frame_valid, valid_indices))
+                ## 放入总 loss 中
+                loss_cann.extend(loss_cann_per_frame_valid)
+                loss_mix.extend(loss_mix_per_frame_valid)
+                
+            # 第三步: 以 ce2 为 loss 进行计算
+            ## 但是要进行梯度的归一化操作！
+            loss_cann_normalized = self._losses_uniform(loss_cann, is_visualize=is_visualize)
+            loss_mix_normalized = self._losses_uniform(loss_mix, is_visualize=is_visualize)
+            
+            
+            loss = torch.mean(loss_cann_normalized) + torch.mean(loss_mix_normalized)
+            loss.backward()
+            
+            # 梯度下降
+            self.optimizer.step()
+            
+            # 输出梯度信息
+            for name, param in self.net.named_parameters():
+                print(f"Parameter name: {name}")
+                print(f"Gradient: {param.grad}")
+        
+        return (mix_ce2 / self.cfg.batch_size, 
+                cann_ce2 / self.cfg.batch_size,
+                siamfc_ce2 / self.cfg.batch_size, 
+                mix_ce / self.cfg.batch_size, 
+                cann_ce / self.cfg.batch_size,
+                siamfc_ce / self.cfg.batch_size,
+                loss.item(), total_successfully_tracked_frames)
+    
+    
+    def _get_resized_response(self, kernel, instance):
+        '''
+        Functions: 返回 272 * 272 的响应图
+        '''
+        instance_features = self.siamfc.net.backbone(instance) # 获得 (bs, 256, 6, 6) 的搜索区域特征图
+        responses = self.siamfc.net.head(kernel, instance_features) # 获得 (bs, 1, 17, 17) 的响应图
+        responses = img_ops.upsample(responses, self.cfg.response_sz,
+                                    self.upscale_sz) # 获得 (bs, 1, 272, 272) 的响应图
+        return responses
+    
+    def _find_peak(self, response, 
+                   num_peaks=5, min_distance=4):
+        response = (response - np.min(response)) / (np.max(response) - np.min(response) + 1e-10)
+        pad_width = 10
+        smoothing_sigma = 1
+        threshold_rel = 0.75
+        # 步骤 0: 填充，使得边缘的局部最值能被找到
+        response = np.pad(response, pad_width=pad_width, mode='constant')
+        
+        # 步骤 1: 平滑处理
+        smoothed_response = gaussian_filter(response, sigma=smoothing_sigma)
+        
+        # 步骤 2: 寻找局部最大值
+        peaks = peak_local_max(smoothed_response, min_distance=min_distance, threshold_rel=threshold_rel, num_peaks=num_peaks)
+        peaks = peaks - pad_width
+        
+        return peaks  
+    
+    def _losses_uniform(self, raw_losses: list, is_visualize=False) -> torch.Tensor:
+        '''
+        Functions: 
+            - 对 loss 进行均匀化。
+            - 去除 self.cfg.rejection_rate 的 loss
+            - 然后对剩下的 loss 按照直方图均匀化，使得 loss 的分布最终变为均匀分布
+        
+        Parameter: 
+            - raw_losses: list, 保存了每一帧的 loss
+            - visualize: bool, 是否可视化
+        
+        Return:
+            - losses: torch.Tensor, 归一化之后的 loss
+        '''
+        raw_losses = [loss.unsqueeze(0) for loss in raw_losses]
+        losses = torch.cat(raw_losses, dim=0) # (seq_len)
+        losses = torch.sort(losses, descending=False).values
+        losses = losses[int(len(losses) * (self.cfg.rejection_rate // 2)):
+                        int(len(losses) * (1 - self.cfg.rejection_rate // 2))] # 去除 rejection_rate 的 loss
+        
+        # 生成直方图
+        hist = torch.histc(losses, bins=self.cfg.bins_num, 
+                           min=float(losses.min()),
+                           max=float(losses.max()))
+        bin_edges = torch.linspace(float(losses.min()), float(losses.max()), steps=self.cfg.bins_num + 1, device=device)
+        
+        # 找到每个数据点所在的 bin 索引
+        inds = torch.bucketize(losses, bin_edges, right=True) - 1
+        inds = inds.clamp(0, self.cfg.bins_num-1)  # 防止索引越界
+        
+        # 计算每个 bin 的权重
+        weights = 1.0 / hist[inds]
+        weights = weights / weights.sum() * len(weights) # 归一化
+        weights = weights.detach() # 不能有梯度
+        
+        # 如果可视化
+        if is_visualize:
+            visualization.show_hist_comparison(losses.detach().cpu().numpy(), torch.ones_like(losses).detach().cpu().numpy(),
+                                               losses.detach().cpu().numpy(), weights.detach().cpu().numpy(),
+                                               bins_num=self.cfg.bins_num, is_visualize=True)
+        
+        # 将 losses 乘上对应权重归一化，并返回
+        losses = losses * weights
+        return losses
+
+        

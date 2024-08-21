@@ -1,5 +1,6 @@
 from __future__ import absolute_import
 
+import math
 import os
 import sys
 
@@ -16,21 +17,20 @@ from utils import gen_ops
 
 dataset = 'OTB100'
 mode = 'eval'
+peak_dist_ths = np.array([1.56]) / 100
 
 if __name__ == '__main__':
 
     # mix_factors = np.linspace(0.90, 0.94, 40)
     # print(mix_factors[24])
-    
-    
-    tracker_name = 'SiamFC_CANN_' + gen_ops.get_formatted_date()
-    net_path = os.path.join(work_path, 'pretrained/siamfc/siamfc_alexnet_e50_download.pth')
-    cann_path = os.path.join(work_path, 'pretrained/otb100_1/siamfc_cann_e49.pth')
-    data_dir = gen_ops.get_data_path(dataset='OTB100', mode='eval') 
-    tracker = CANN_Tracker(net_path=net_path, cann_path=None, tracker_name=tracker_name)
-    
-    exp_tool = gen_ops.get_exp_tool(dataset=dataset, mode=mode, data_dir=data_dir) 
-    
-    exp_tool.run(tracker, is_visualize=True, is_video_saving=False) # 运行测试
-    exp_tool.report([tracker.name]) # 测试结果报告
+        tracker_name = 'SiamFC_CANN_' + gen_ops.get_formatted_date()
+        net_path = os.path.join(work_path, 'pretrained/siamfc/siamfc_alexnet_e50_download.pth')
+        cann_path = os.path.join(work_path, 'pretrained/otb100_1/siamfc_cann_e49.pth')
+        data_dir = gen_ops.get_data_path(dataset='OTB100', mode='eval') 
+        tracker = CANN_Tracker(net_path=net_path, cann_path=None, tracker_name=tracker_name)
+        
+        exp_tool = gen_ops.get_exp_tool(dataset=dataset, mode=mode, data_dir=data_dir) 
+        
+        exp_tool.run(tracker, is_visualize=False, is_video_saving=False) # 运行测试
+        exp_tool.report([tracker.name]) # 测试结果报告
     

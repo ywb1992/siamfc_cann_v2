@@ -82,7 +82,10 @@ def get_data_path(dataset='OTB100', mode='test'):
     '''
     now_os = get_os()
     if now_os == 'w':
-        data_path = os.path.join(parent_path, 'data/' + mode + '/' + dataset)
+        if dataset == 'OTB100':
+            data_path = os.path.join(parent_path, 'data/' + 'eval' + '/' + dataset)        
+        else:
+            data_path = os.path.join(parent_path, 'data/' + mode + '/' + dataset)
     elif now_os == 'l':
         data_path = None
     else:

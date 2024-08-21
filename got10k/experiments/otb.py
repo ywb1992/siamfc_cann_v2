@@ -41,7 +41,8 @@ class ExperimentOTB(object):
         self.nbins_iou = 21
         self.nbins_ce = 51
 
-    def run(self, tracker, is_visualize=False, is_video_saving=False):
+    def run(self, tracker, is_visualize=False, is_video_saving=False,
+            **kwargs):
 
         print('Running tracker %s on %s...' % (tracker.name, type(self.dataset).__name__)) # type(xxx).__name__ 类型的名字
         
@@ -56,7 +57,8 @@ class ExperimentOTB(object):
             boxes, times, vis_enss, gt_dist_in_ress, gt_dist_in_imgs = tracker.track(img_files, anno[0, :], 
                                         anno, seq_name,
                                         is_visualize=is_visualize, 
-                                        is_video_saving=is_video_saving) # 返回标注框列表和每一帧所用时间
+                                        is_video_saving=is_video_saving,
+                                        **kwargs) # 返回标注框列表和每一帧所用时间
             
             
             assert len(boxes) == len(anno)

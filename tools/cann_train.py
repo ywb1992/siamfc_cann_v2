@@ -27,4 +27,4 @@ if __name__ == '__main__':
     
     seqs = gen_ops.get_train_tool(dataset=dataset, mode=mode, data_dir=data_dir) # 加载数据集
     tracker = CANN_Tracker(net_path=net_path, mode=mode) # 加载模型
-    tracker.train_over(seqs, save_dir=save_dir) # 进行训练
+    tracker.train_over(seqs, save_dir=save_dir, is_visualize=False) # 进行训练

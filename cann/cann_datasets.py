@@ -68,9 +68,9 @@ class CANN_Pair(Dataset):
             return None, None, None
         else: 
             # 在 indices 的前半中寻找模板帧
-            # 然后固定长度 100，取剩下的图片、标注并返回
-            for _ in range(50):
-                seq_len = 500
+            # 然后固定长度 1000，取剩下的图片、标注并返回
+            for _ in range(100):
+                seq_len = 1000
                 exemplar_id = np.random.choice(indices[:n//2])
                 if exemplar_id + seq_len < len(img_files):
                     return  (img_files[exemplar_id : exemplar_id + seq_len],

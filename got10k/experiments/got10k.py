@@ -38,7 +38,8 @@ class ExperimentGOT10k(object):
         self.nbins_iou = 101
         self.repetitions = 3
 
-    def run(self, tracker, is_visualize=False, is_video_saving=False):
+    def run(self, tracker, is_visualize=False, is_video_saving=False,
+            **kwargs):
         if self.subset == 'test':
             print('\033[93m[WARNING]:\n' \
                   'The groundtruths of GOT-10k\'s test set is withholded.\n' \
